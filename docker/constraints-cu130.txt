@@ -1,0 +1,5 @@
+# Keep dependency resolution from replacing the selected CUDA/PyTorch pair.
+torch==2.9.1+cu130
+torchvision==0.24.1+cu130
+numpy==2.2.6
+six==1.17.0
