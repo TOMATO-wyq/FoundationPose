@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # CUDA 13.0 migration. Actual build and GPU validation are required.
 FROM nvidia/cuda:13.0.2-devel-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -40,5 +41,80 @@ RUN python -m pip check \
 # need pybind11 >= 2.12 for its updated NumPy API support.
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --index-url "${PIP_INDEX_URL}" pybind11==2.13.6
+
+# Match the host camera stack: Ubuntu 22.04, CUDA 13.0, ZED SDK 5.5.0,
+# ROS 2 Humble, and zed-ros2-wrapper v5.5.0 (host commit 431dcf4b).
+# The large SDK installer and the wrapper checkout are supplied as BuildKit
+# named contexts by docker/cuda130.sh, so neither is copied into this repo.
+ARG ZED_SDK_RUN_NAME=ZED_SDK_Ubuntu22_cuda13.0_tensorrt11.0_v5.5.0.zstd.run
+ARG ZED_GROUP_ID=1001
+ARG ZED_ROS2_REF=431dcf4b1ea39caf894ca6ea294437437dbdb034
+COPY --from=zed_sdk ${ZED_SDK_RUN_NAME} /tmp/ZED_SDK.run
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl lsb-release less udev usbutils zstd libpng-dev libv4l-dev \
+    libturbojpeg0-dev libusb-1.0-0-dev \
+    && echo "CUDA Version 13.0.0" > /usr/local/cuda/version.txt \
+    && chmod +x /tmp/ZED_SDK.run \
+    && /tmp/ZED_SDK.run -- silent skip_tools skip_cuda \
+    && ln -sf /lib/x86_64-linux-gnu/libusb-1.0.so.0 \
+       /usr/lib/x86_64-linux-gnu/libusb-1.0.so \
+    && rm -f /tmp/ZED_SDK.run \
+    && rm -rf /var/lib/apt/lists/*
+# libcuda.so.1 is injected by NVIDIA Container Toolkit only at runtime, so
+# importing pyzed.sl during `docker build` would fail despite a valid install.
+# Check package metadata here; runtime checks perform the real CUDA import.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --index-url "${PIP_INDEX_URL}" requests \
+    && mkdir -p /tmp/pyzed \
+    && python /usr/local/zed/get_python_api.py --path /tmp/pyzed \
+    && rm -rf /tmp/pyzed \
+    && python -m pip show pyzed \
+    && test "$(python -m pip show pyzed | sed -n 's/^Version: //p')" = "5.5"
+
+# Use the same ROS 2 package mirror as the host. The signing key remains the
+# official ROS key; changing mirrors does not change package authentication.
+RUN curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+      -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo 'Acquire::Retries "8";' > /etc/apt/apt.conf.d/80-foundationpose-network \
+    && echo 'Acquire::http::Timeout "120";' >> /etc/apt/apt.conf.d/80-foundationpose-network \
+    && echo 'Acquire::https::Timeout "120";' >> /etc/apt/apt.conf.d/80-foundationpose-network \
+    && echo 'Acquire::https::Pipeline-Depth "0";' >> /etc/apt/apt.conf.d/80-foundationpose-network \
+    && sed -i \
+      -e 's|http://archive.ubuntu.com/ubuntu|http://mirrors.ustc.edu.cn/ubuntu|g' \
+      -e 's|http://security.ubuntu.com/ubuntu|http://mirrors.ustc.edu.cn/ubuntu|g' \
+      /etc/apt/sources.list \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://mirrors.ustc.edu.cn/ros2/ubuntu jammy main" \
+      > /etc/apt/sources.list.d/ros2.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+      ros-humble-ros-base python3-rosdep python3-colcon-common-extensions \
+      python3-cairo \
+    && python -m pip install --index-url "${PIP_INDEX_URL}" setuptools==79.0.1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=zed_ros2 zed_components /opt/zed_ws/src/zed-ros2-wrapper/zed_components
+COPY --from=zed_ros2 zed_wrapper /opt/zed_ws/src/zed-ros2-wrapper/zed_wrapper
+COPY --from=zed_ros2 zed_ros2 /opt/zed_ws/src/zed-ros2-wrapper/zed_ros2
+RUN rosdep init 2>/dev/null || true \
+    && rosdep update --rosdistro humble \
+    && apt-get update \
+    && rosdep install --from-paths /opt/zed_ws/src --ignore-src -r -y \
+      --rosdistro humble \
+    && rm -rf /var/lib/apt/lists/* \
+    && . /opt/ros/humble/setup.sh \
+    && cd /opt/zed_ws \
+    && colcon build --symlink-install --cmake-args=-DCMAKE_BUILD_TYPE=Release
+
+RUN mkdir -p /usr/local/zed/settings /usr/local/zed/resources /usr/local/zed/.log \
+    && chgrp -R "${ZED_GROUP_ID}" /usr/local/zed \
+    && chmod -R g+rwX /usr/local/zed/settings /usr/local/zed/resources /usr/local/zed/.log \
+    && printf 'ZED_ROS2_REF=%s\n' "${ZED_ROS2_REF}" > /opt/zed_ws/BUILD_INFO
+
+COPY docker/ros_entrypoint.sh /ros_entrypoint.sh
+RUN chmod +x /ros_entrypoint.sh
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics,video \
+    ZED_SDK_ROOT_DIR=/usr/local/zed \
+    ROS_DISTRO=humble
 WORKDIR /workspace/FoundationPose
+ENTRYPOINT ["/ros_entrypoint.sh"]
 CMD ["bash"]

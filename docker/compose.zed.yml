@@ -1,0 +1,36 @@
+name: foundationpose
+
+services:
+  zed_camera:
+    image: foundationpose:rtx50-cu130
+    container_name: foundationpose-zed
+    restart: unless-stopped
+    privileged: true
+    network_mode: host
+    ipc: host
+    shm_size: 4gb
+    runtime: nvidia
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    group_add:
+      - "${VIDEO_GID:-44}"
+      - "${ZED_GID:-1001}"
+    environment:
+      HOME: /tmp
+      MPLCONFIGDIR: /tmp/matplotlib
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics,video
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-0}"
+    volumes:
+      - /dev:/dev
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/group:/etc/group:ro
+      - ../:/workspace/FoundationPose
+      - /usr/local/zed/settings:/usr/local/zed/settings
+      - /usr/local/zed/resources:/usr/local/zed/resources
+    working_dir: /workspace/FoundationPose
+    command:
+      - ros2
+      - launch
+      - zed_wrapper
+      - zed_camera.launch.py
+      - camera_model:=zed
