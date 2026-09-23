@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Usage: source /home/tomato/6Dpose/activate
+# A subshell keeps the caller's options, variables and directory unchanged.
+(
+  task_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd) || exit
+  bash "$task_root/FoundationPose/docker/cuda130.sh" shell
+)
