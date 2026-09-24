@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+project_root=$(cd -- "$repo_root/.." && pwd)
 image=foundationpose:rtx50-cu130
 zed_sdk_installer=${ZED_SDK_INSTALLER:-/home/tomato/下载/ZED_SDK_Ubuntu22_cuda13.0_tensorrt11.0_v5.5.0.zstd.run}
 zed_ros2_source=${ZED_ROS2_SOURCE:-/home/tomato/zed_ws/src/zed-ros2-wrapper}
@@ -68,8 +69,8 @@ case "${1:-shell}" in
       --mount type=bind,src=/etc/passwd,dst=/etc/passwd,readonly
       --mount type=bind,src=/etc/group,dst=/etc/group,readonly
       -e HOME=/tmp -e MPLCONFIGDIR=/tmp/matplotlib
-      -v "$repo_root:/workspace/FoundationPose"
-      -w /workspace/FoundationPose)
+      -v "$project_root:/workspace/6Dpose"
+      -w /workspace/6Dpose/FoundationPose)
     for group_name in video zed; do
       group_id=$(getent group "$group_name" | cut -d: -f3)
       [[ -n "$group_id" ]] && args+=(--group-add "$group_id")
