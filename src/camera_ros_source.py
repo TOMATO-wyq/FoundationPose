@@ -59,6 +59,7 @@ class CameraSource(Node):
         self.bridge = CvBridge()
         self.condition = threading.Condition()
         self.latest = None
+        self.tag_worker = None
         self.sequence = 0
         self.info = None
         self.last_arrival = None
@@ -134,6 +135,12 @@ class CameraSource(Node):
                 self.latest = (np.ascontiguousarray(rgb), depth, k, stamp,
                                color.header.frame_id, self.sequence, dict(self.source_timings))
                 self.condition.notify_all()
+            if self.args.tag_overlay:
+                if self.tag_worker is None:
+                    from live_tag_worker import LiveTagWorker
+                    self.tag_worker = LiveTagWorker(self.args.tag_size, self.args.tag_id,
+                                                   self.args.tag_hz, list(self.info.d))
+                self.tag_worker.submit(rgb, k, stamp, self.sequence)
             if self.sequence == 1:
                 self.get_logger().info(f"RGB-D ready: {size}; {color.encoding}/{depth_message.encoding}")
             if self.sequence % 30 == 0:
@@ -154,7 +161,13 @@ def main():
     parser.add_argument("--scale", type=float, default=0.5)
     parser.add_argument("--depth-scale", type=float, default=0.001)
     parser.add_argument("--slop", type=float, default=0.05)
+    parser.add_argument('--tag-overlay', action='store_true', help='独立后台AprilTag进程，默认关闭')
+    parser.add_argument('--tag-size', type=float, default=.075)
+    parser.add_argument('--tag-id', type=int, default=0)
+    parser.add_argument('--tag-hz', type=float, default=5, help='Tag最大提交频率，默认5Hz')
     args = parser.parse_args()
+    if not (np.isfinite(args.tag_size) and args.tag_size > 0 and np.isfinite(args.tag_hz) and 0 < args.tag_hz <= 30 and args.tag_id >= 0):
+        parser.error('invalid Tag parameters')
     if not 0 < args.scale <= 1 or not np.isfinite(args.depth_scale) or args.depth_scale <= 0:
         parser.error("invalid scale/depth-scale")
     if not np.isfinite(args.slop) or args.slop < 0:
@@ -204,7 +217,8 @@ def main():
                             if not ready:
                                 raise TimeoutError("No new RGB-D frame for 30 seconds")
                             frame = source.latest
-                        send_frame(connection, frame, roi=roi)
+                        tag_result = source.tag_worker.poll() if source.tag_worker else None
+                        send_frame(connection, (*frame, tag_result), roi=roi)
                         last_sequence = frame[5]
                 except (OSError, TimeoutError, ValueError, EOFError) as error:
                     print(f"Client disconnected: {error}", flush=True)
@@ -218,6 +232,8 @@ def main():
             rclpy.shutdown()
         if thread:
             thread.join(timeout=2)
+        if source.tag_worker:
+            source.tag_worker.close()
         source.destroy_node()
 
 

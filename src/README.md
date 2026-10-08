@@ -27,6 +27,46 @@ python3 /home/tomato/6Dpose/src/camera_ros_source.py --camera d435i
 
 默认订阅 `/camera/camera/rgbd`，无需 Python 双话题配对。默认 `--scale 0.5` 将 640×480 缩到 320×240；需要原分辨率时增加 `--scale 1`。等出现 `RGB-D ready` 后启动 FP。
 
+### 可选：实时 AprilTag 对照
+
+在数据源命令后加参数，不需要改变 FP 启动命令：
+
+```bash
+python3 ~/6Dpose/src/camera_ros_source.py --camera d435i --scale 1 \
+  --tag-overlay --tag-size 0.075 --tag-id 0 --tag-hz 5
+```
+
+当前使用宿主机已有的 `~/apriltag_ws/install/apriltag/lib/` 和其中 Python 3.10 的官方 AprilTag 扩展。此选项默认关闭；启用前需完成该本地 AprilTag 安装。只检测 `tag36h11`，尺寸为黑色正方形外边长，单位米。
+
+Tag 使用独立 CPU 进程，单线程检测，默认最多提交5Hz；输入队列最多一个待处理帧，满时丢帧，RGB-D 不等待检测。绿色为 FP 箱体，青色为 Tag 换算箱体。当前换算假设35cm正方体、标签位于面的中心，沿标签负Z移动175mm；不是通用物体外参。Tag与OBJ具体轴向未独立标定。
+
+叠加采用两结果源时间戳差不超过300ms的参考，屏幕显示时间差；只有源帧号完全相同时才计算中心差值。不同帧的青色框仅供观察，运动时不能当作同帧精度对照，缺失或过期Tag不沿用旧框。
+
+### 实时窗口和性能计时
+
+主位姿窗口默认宽1280像素，保持比例并可拖动缩放。左上 `Image` 是桥接缩放后的完整画面尺寸，`FP input` 是实际推理尺寸（动态ROI时更小）；放大窗口不会增加推理分辨率。
+
+窗口运行在独立进程中，单帧共享缓冲只保存最新画面，FP以非阻塞方式提交，显示慢时允许跳过画面。窗口使用Q/Esc退出、R重新定位。显示进程异常时主流程继续运行并停止GUI提交；退出时清理显示进程。
+
+`Inference` 是当帧推理耗时的倒数，`FP loop`/右上FPS是主流程完成帧率，`Display FPS` 是窗口提交显示的帧率（不等于显示器实际刷新率）。计时保存到运行目录 `loop_timing.csv`：
+
+- `fp_draw_s`、`tag_draw_s`、`text_s`：画框、Tag叠加、文字和颜色转换。
+- 新版 `imshow_s`：提交共享缓冲耗时；新版 `waitkey_s`：读取控制命令耗时。它们不再代表主进程调用imshow/waitKey。
+- `display_s`：主流程绘图及提交总开销，`inference_s`：推理耗时，`rgbd_wait_s`：获取下一份RGB-D耗时。
+
+修改代码后重启FP程序；启用Tag还需重启宿主机桥接。相机驱动可以继续运行。
+
+### 切换三维模型
+
+保持蓝色目标分割权重，仅切换FP网格示例：
+
+```bash
+bash src/start_kfs_fp.sh d435i --mask_mode yolo \
+  --mesh /workspace/6Dpose/kfs_model/BlueR1KFS/BlueR1KFS.obj
+```
+
+模型、纹理、训练权重属于本地数据，不包含在Git仓库中，需要在对应路径准备。
+
 ### 数据源启动报 `Address already in use`
 
 当前版本会自动清理未被占用的残留 `outputs/live_rgbd.sock`。如果提示 `RGB-D source is already running`，先在旧数据源终端按 Ctrl+C，然后重新启动；不要删除正在运行的数据源的 socket。

@@ -72,6 +72,7 @@ def main():
     window = f"Original FP live {args.camera} (Q:quit R:register)"
     count = 0
     metrics = None
+    display = None
     try:
         connection.connect(args.socket)
         rgb, depth, k, metadata = receive_frame(connection)
@@ -103,7 +104,7 @@ def main():
         with (output / "timing.csv").open("w", buffering=1) as timing, \
                 (output / "loop_timing.csv").open("w", buffering=1) as loop_timing:
             timing.write("processed_index,source_sequence,stamp,mode,inference_seconds\n")
-            loop_timing.write("processed_index,source_sequence,mode,inference_s,pose_save_s,display_s,rgbd_wait_s,loop_s,roi_x0,roi_y0,roi_x1,roi_y1\n")
+            loop_timing.write("processed_index,source_sequence,mode,inference_s,pose_save_s,display_s,rgbd_wait_s,loop_s,roi_x0,roi_y0,roi_x1,roi_y1,fp_draw_s,tag_draw_s,text_s,imshow_s,waitkey_s\n")
             while True:
                 loop_started = time.monotonic()
                 metrics.begin()
@@ -150,6 +151,7 @@ def main():
                 meter.mark()
                 display_started = time.monotonic()
                 key = -1
+                fp_draw_s = tag_draw_s = text_s = imshow_s = waitkey_s = 0.0
                 if not args.no_display:
                     vis = metadata.get('preview_rgb', rgb).copy()
                     if pose is not None:
@@ -163,9 +165,54 @@ def main():
                     else:
                         cv2.putText(vis, f"{event['state']}: pose unavailable", (10, 30),
                                     cv2.FONT_HERSHEY_SIMPLEX, .6, (255, 80, 80), 2)
-                    cv2.imshow(window, draw_fps(cv2.cvtColor(vis, cv2.COLOR_RGB2BGR), meter.value()))
-                    key = cv2.waitKey(1) & 0xFF
+                    fp_draw_s = time.monotonic() - display_started
+                    section_started = time.monotonic()
+                    tag = metadata.get("tag_result")
+                    if tag and tag.get("pose") is not None:
+                        age = metadata["stamp"] - tag["stamp"]
+                        # 过期Tag不画；只有完全相同源帧才能算FP/Tag差值。
+                        if 0 <= age <= .3:
+                            tag_pose = np.asarray(tag["pose"], dtype=np.float64)
+                            cube_pose = tag_pose.copy()
+                            cube_pose[:3, 3] -= .175 * cube_pose[:3, 2]
+                            from live_tag_overlay import draw_tag_cube
+                            vis = draw_tag_cube(vis, cube_pose, full_k)
+                            label = f"FP green / Tag cyan; Tag age {age*1000:.0f}ms"
+                            if tag["sequence"] == metadata["sequence"] and pose is not None:
+                                delta = (pose[:3, 3] - cube_pose[:3, 3]) * 1000
+                                label += f"; diff {np.linalg.norm(delta):.1f}mm"
+                            cv2.putText(vis, label, (max(5, vis.shape[1]-650), 30), cv2.FONT_HERSHEY_SIMPLEX,
+                                        .5, (0,255,255), 2)
+                    tag_draw_s = time.monotonic() - section_started
+                    section_started = time.monotonic()
+                    # 标注图像像素尺寸，不是屏幕窗口大小；ROI推理尺寸可能更小。
+                    resolution_label = (f"Image: {vis.shape[1]}x{vis.shape[0]} | "
+                                        f"FP input: {rgb.shape[1]}x{rgb.shape[0]}")
+                    cv2.putText(vis, resolution_label, (10, 58), cv2.FONT_HERSHEY_SIMPLEX,
+                                .55, (0, 0, 0), 4, cv2.LINE_AA)
+                    cv2.putText(vis, resolution_label, (10, 58), cv2.FONT_HERSHEY_SIMPLEX,
+                                .55, (255, 255, 255), 1, cv2.LINE_AA)
+                    display_image = draw_fps(cv2.cvtColor(vis, cv2.COLOR_RGB2BGR), meter.value())
+                    cv2.putText(display_image, f"Inference: {1/max(seconds,1e-6):.1f} FPS | FP loop: {meter.value():.1f}",
+                                (10,106),cv2.FONT_HERSHEY_SIMPLEX,.5,(255,255,255),1,cv2.LINE_AA)
+                    text_s = time.monotonic() - section_started
+                    section_started = time.monotonic()
+                    if display is None:
+                        from async_pose_display import AsyncPoseDisplay
+                        display = AsyncPoseDisplay(display_image.shape, window)
+                    display.submit(display_image)
+                    imshow_s = time.monotonic() - section_started  # 此列现在表示共享缓冲提交时间。
+                    section_started = time.monotonic()
+                    key = display.poll_key()
+                    waitkey_s = time.monotonic() - section_started  # 非阻塞控制读取，不调用waitKey。
+                    if not display.process.is_alive() and key not in (ord('q'),27):
+                        print("Display process stopped; continuing FP without GUI", flush=True)
+                        display.close()
+                        display = None
+                        args.no_display = True
                 display_seconds = time.monotonic() - display_started
+                if count == 1 or count % 30 == 0:
+                    print(f"Display detail: FP={fp_draw_s*1000:.2f}ms; Tag={tag_draw_s*1000:.2f}ms; text/convert={text_s*1000:.2f}ms; imshow={imshow_s*1000:.2f}ms; waitKey={waitkey_s*1000:.2f}ms", flush=True)
                 if count == 1 or count % 30 == 0:
                     print(f"Processed {count}; source={metadata['sequence']}; {mode}={seconds * 1000:.1f}ms; FPS={meter.value():.1f}", flush=True)
                 if key in (ord("q"), 27) or (args.max_frames and count >= args.max_frames):
@@ -187,7 +234,7 @@ def main():
                 wait_seconds = time.monotonic() - wait_started
                 loop_seconds = time.monotonic() - loop_started
                 bounds = roi_current or [0, 0, full_shape[1], full_shape[0]]
-                loop_timing.write(f"{count},{source_sequence},{mode},{seconds:.6f},{save_seconds:.6f},{display_seconds:.6f},{wait_seconds:.6f},{loop_seconds:.6f},"+','.join(str(x) for x in bounds)+'\n')
+                loop_timing.write(f"{count},{source_sequence},{mode},{seconds:.6f},{save_seconds:.6f},{display_seconds:.6f},{wait_seconds:.6f},{loop_seconds:.6f},"+','.join(str(x) for x in bounds)+f',{fp_draw_s:.6f},{tag_draw_s:.6f},{text_s:.6f},{imshow_s:.6f},{waitkey_s:.6f}\n')
                 if count == 1 or count % 30 == 0:
                     print(f"Loop: inference={seconds*1000:.1f}ms; save={save_seconds*1000:.1f}ms; display={display_seconds*1000:.1f}ms; RGB-D wait={wait_seconds*1000:.1f}ms", flush=True)
                 if key == ord("r"):
@@ -197,6 +244,8 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        if display:
+            display.close()
         if metrics:
             metrics.close()
         connection.close()

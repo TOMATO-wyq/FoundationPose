@@ -30,6 +30,7 @@ def send_frame(connection, frame, roi=None):
                              frame_id=frame_id, sequence=sequence,
                              roi_xyxy=roi, full_shape=list(full_shape), full_k=full_k.tolist(),
                              has_preview=roi is not None,
+                             tag_result=frame[7] if len(frame) > 7 else None,
                              source_timings=source_timings)).encode()
     connection.sendall(struct.pack("!I", len(header)))
     connection.sendall(header)
