@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/facebookresearch/sam2.git",
+  "commit": "2b90b9f5ceec907a1c18123530e92e794ad901a4",
+  "checkpoint_url": "https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt",
+  "checkpoint_file": "sam2.1_hiera_small.pt",
+  "checkpoint_sha256": "6d1aa6f30de5c92224f8172114de081d104bbd23dd9dc5c58996f0cad5dc4d38",
+  "model_config": "configs/sam2.1/sam2.1_hiera_s.yaml",
+  "postprocessing": "disabled; no inferred hole filling",
+  "tested_sam_torch": "2.7.1+cu128",
+  "foundationpose_base_image": "foundationpose:rtx50-cu130"
+}

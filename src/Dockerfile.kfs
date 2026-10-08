@@ -1,0 +1,12 @@
+# Build from the repository root AFTER setup_kfs_sam2.py --verify-only succeeds.
+# This is a new image: the existing working FP image is never modified.
+FROM foundationpose:rtx50-cu130
+COPY requirements-sam2-extra.txt /tmp/kfs-extra.txt
+RUN python -m pip install --no-cache-dir -r /tmp/kfs-extra.txt
+COPY --from=sam2 /sam2 /opt/kfs-sam2/sam2
+COPY --from=sam2 /setup.py /MANIFEST.in /README.md /LICENSE /LICENSE_cctorch /opt/kfs-sam2/
+COPY sam2-lock.json /opt/kfs-sam2-lock.json
+RUN SAM2_BUILD_CUDA=0 python -m pip install --no-deps --no-build-isolation /opt/kfs-sam2 \
+    && python -m pip check \
+    && python -c "import torch; from sam2.sam2_image_predictor import SAM2ImagePredictor; from hydra import compose; compose(config_name='configs/sam2.1/sam2.1_hiera_s.yaml'); print(torch.__version__)" \
+    && python -m pip freeze > /opt/kfs-packages.txt

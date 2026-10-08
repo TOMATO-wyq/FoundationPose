@@ -1,0 +1,6 @@
+FROM foundationpose:rtx50-cu130
+# Preserve the base image's GPU framework while installing YOLO in a new image.
+RUN python -c "import importlib.metadata as m; open('/tmp/gpu-constraints.txt','w').write('\n'.join(p+'=='+m.version(p) for p in ('torch','torchvision','numpy'))+'\n')" \
+    && python -m pip install --no-cache-dir -c /tmp/gpu-constraints.txt ultralytics==8.3.161 \
+    && python -m pip check \
+    && python -c "from ultralytics import YOLO; import torch; print(torch.__version__)"

@@ -1,6 +1,55 @@
 # Local build outputs and captured sensor data
 zed_photo_capture/build/
 zed_photo_capture/captures/
+zed_photo_capture/svo/
+build/
+dist/
+*.egg-info/
+*.so
+*.o
+CMakeFiles/
+CMakeCache.txt
+
+# ROS workspace / local logs
+/install/
+/log/
+/logs/
+
+# Datasets, object meshes, recordings and generated results
+/data/
+/dataset/
+/datasets/
+/training_datasets/
+/kfs_model/
+/recordings/
+/captures/
+/outputs/
+/runs/
+*.svo
+*.svo2
+*.bag
+*.db3
+*.db3-shm
+*.db3-wal
+*.mcap
+
+# Downloaded dataset / model archives
+*.zip
+*.tar
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tgz
+*.7z
+
+# Downloaded / trained model weights
+/weights/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
+*.safetensors
 
 # Common local development files
 **/__pycache__/
@@ -8,5 +57,25 @@ zed_photo_capture/captures/
 .vscode/
 .idea/
 .env
+.env.*
+!.env.example
 .venv/
+.venv-*/
 venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.ipynb_checkpoints/
+.coverage
+.coverage.*
+htmlcov/
+*.log
+.DS_Store
+Thumbs.db
+
+# Isolated KFS model/dependency downloads
+third_party/sam2/
+.kfs-deps/
+.venv-kfs/

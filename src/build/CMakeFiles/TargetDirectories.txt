@@ -1,3 +1,0 @@
-/home/tomato/6Dpose/src/build/CMakeFiles/zed_svo_export.dir
-/home/tomato/6Dpose/src/build/CMakeFiles/edit_cache.dir
-/home/tomato/6Dpose/src/build/CMakeFiles/rebuild_cache.dir

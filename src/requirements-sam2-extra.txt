@@ -1,0 +1,10 @@
+# Added to a separate environment/image; never upgrade the working FP env.
+hydra-core==1.3.2
+omegaconf==2.3.1
+antlr4-python3-runtime==4.9.3
+iopath==0.1.10
+portalocker==4.4.0
+packaging==26.3
+tqdm==4.70.1
+typing_extensions==4.16.0
+PyYAML==6.0.3
