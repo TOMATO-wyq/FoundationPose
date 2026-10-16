@@ -1,0 +1,11 @@
+{
+  "completed_frames": 303,
+  "planned_frames": 502,
+  "elapsed_to_last_result_seconds": 160.08382654190063,
+  "fps_before_stall": 1.8927583538284065,
+  "latency_median_seconds": 0.07403397560119629,
+  "latency_p95_seconds": 2.96244740486145,
+  "latency_max_seconds": 6.083623886108398,
+  "no_preview": true,
+  "full_test_pass": false
+}

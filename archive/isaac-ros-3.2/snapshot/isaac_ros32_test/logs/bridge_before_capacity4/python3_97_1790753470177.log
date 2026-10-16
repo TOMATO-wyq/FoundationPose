@@ -1,0 +1,71 @@
+[INFO] [1790753470.566162414] [isaacfp_seed_tracking_bridge]: Loaded original first-frame pose from /workspace/6Dpose/outputs/zed_foundationpose/ob_in_cam/000000.txt
+[INFO] [1790753470.606202486] [isaacfp_seed_tracking_bridge]: Tracker subscribers image/depth/info/pose=(1, 1, 1, 1)
+[INFO] [1790753665.356644515] [isaacfp_seed_tracking_bridge]: Forwarded 1 RGB-D frames to tracker; pose updates=0; dropped input frames=0; input stamp=1790753665.339984200; pose tensor bytes=64
+[INFO] [1790753665.607554425] [isaacfp_seed_tracking_bridge]: Sent same-frame GXF kick copy 1/2; origin=(1790753665, 339984200)
+[INFO] [1790753665.906991113] [isaacfp_seed_tracking_bridge]: Sent same-frame GXF kick copy 2/2; origin=(1790753665, 339984200)
+[INFO] [1790753668.723918139] [isaacfp_seed_tracking_bridge]: Mapped tracker detection source=(1790753665, 339984200) to original=(1790753665, 339984200); latency=3368 ms
+[WARN] [1790753668.724674958] [isaacfp_seed_tracking_bridge]: Using Detection3D center as tracker pose feedback for origin=(1790753665, 339984200); pose_matrix_output has not arrived
+[INFO] [1790753668.725268152] [isaacfp_seed_tracking_bridge]: Received 1 tracker pose updates; feedback latency=3369 ms; source=detection_fallback
+[INFO] [1790753723.156928513] [isaacfp_seed_tracking_bridge]: Sent same-frame GXF kick copy 1/2; origin=(1790753722, 842977739)
+[INFO] [1790753723.184928589] [isaacfp_seed_tracking_bridge]: Mapped tracker detection source=(1790753722, 842977739) to original=(1790753722, 842977739); latency=329 ms
+[WARN] [1790753723.185361145] [isaacfp_seed_tracking_bridge]: Using Detection3D center as tracker pose feedback for origin=(1790753722, 842977739); pose_matrix_output has not arrived
+[INFO] [1790753723.556786726] [isaacfp_seed_tracking_bridge]: Sent same-frame GXF kick copy 1/2; origin=(1790753723, 215134285)
+[INFO] [1790753725.883777723] [isaacfp_seed_tracking_bridge]: Mapped tracker detection source=(1790753723, 215134285) to original=(1790753723, 215134285); latency=2628 ms
+[WARN] [1790753725.884258068] [isaacfp_seed_tracking_bridge]: Using Detection3D center as tracker pose feedback for origin=(1790753723, 215134285); pose_matrix_output has not arrived
+[WARN] [1790753725.981728569] [isaacfp_seed_tracking_bridge]: Ignoring duplicate or stale tracker pose update stamp=(1790753665, 339984200), origin=(1790753665, 339984200), source=pose_matrix
+[WARN] [1790753725.982168980] [isaacfp_seed_tracking_bridge]: Ignoring duplicate or stale tracker pose update stamp=(1790753665, 905548739), origin=(1790753665, 339984200), source=pose_matrix
+[WARN] [1790753725.982583643] [isaacfp_seed_tracking_bridge]: Ignoring duplicate or stale tracker pose update stamp=(1790753722, 842977739), origin=(1790753722, 842977739), source=pose_matrix
+[WARN] [1790753725.983027250] [isaacfp_seed_tracking_bridge]: Ignoring duplicate or stale tracker pose update stamp=(1790753723, 155398061), origin=(1790753722, 842977739), source=pose_matrix
+[WARN] [1790753725.983464595] [isaacfp_seed_tracking_bridge]: Ignoring duplicate or stale tracker pose update stamp=(1790753723, 215134285), origin=(1790753723, 215134285), source=pose_matrix
+[WARN] [1790753725.983860593] [isaacfp_seed_tracking_bridge]: Ignoring duplicate or stale tracker pose update stamp=(1790753723, 855393891), origin=(1790753723, 215134285), source=pose_matrix
+[INFO] [1790753726.256862291] [isaacfp_seed_tracking_bridge]: Sent same-frame GXF kick copy 1/2; origin=(1790753725, 918370889)
+[INFO] [1790753726.284754409] [isaacfp_seed_tracking_bridge]: Mapped tracker detection source=(1790753725, 918370889) to original=(1790753725, 918370889); latency=329 ms
+[WARN] [1790753726.285306007] [isaacfp_seed_tracking_bridge]: Using Detection3D center as tracker pose feedback for origin=(1790753725, 918370889); pose_matrix_output has not arrived
+[WARN] [1790753726.286145983] [isaacfp_seed_tracking_bridge]: Ignoring duplicate or stale tracker pose update stamp=(1790753725, 918370889), origin=(1790753725, 918370889), source=pose_matrix
+[INFO] [1790753726.357136763] [isaacfp_seed_tracking_bridge]: Forwarded 5 RGB-D frames to tracker; pose updates=4; dropped input frames=0; input stamp=1790753726.314129151; pose tensor bytes=64
+[WARN] [1790753726.380264771] [isaacfp_seed_tracking_bridge]: Ignoring duplicate or stale tracker pose update stamp=(1790753726, 255372434), origin=(1790753725, 918370889), source=pose_matrix
+[INFO] [1790753726.607544488] [isaacfp_seed_tracking_bridge]: Sent same-frame GXF kick copy 1/2; origin=(1790753726, 314129151)
+[INFO] [1790753726.631697147] [isaacfp_seed_tracking_bridge]: Received 5 tracker pose updates; feedback latency=275 ms; source=pose_matrix
+[INFO] [1790753726.632911380] [isaacfp_seed_tracking_bridge]: Mapped tracker detection source=(1790753726, 314129151) to original=(1790753726, 314129151); latency=277 ms
+[WARN] [1790753726.717972576] [isaacfp_seed_tracking_bridge]: Ignoring duplicate or stale tracker pose update stamp=(1790753726, 605990342), origin=(1790753726, 314129151), source=pose_matrix
+[INFO] [1790753726.957488861] [isaacfp_seed_tracking_bridge]: Sent same-frame GXF kick copy 1/2; origin=(1790753726, 667341564)
+[INFO] [1790753726.979547576] [isaacfp_seed_tracking_bridge]: Mapped tracker detection source=(1790753726, 667341564) to original=(1790753726, 667341564); latency=274 ms
+[WARN] [1790753726.980081261] [isaacfp_seed_tracking_bridge]: Using Detection3D center as tracker pose feedback for origin=(1790753726, 667341564); pose_matrix_output has not arrived
+[WARN] [1790753726.980965098] [isaacfp_seed_tracking_bridge]: Ignoring duplicate or stale tracker pose update stamp=(1790753726, 667341564), origin=(1790753726, 667341564), source=pose_matrix
+[WARN] [1790753727.079321268] [isaacfp_seed_tracking_bridge]: Ignoring duplicate or stale tracker pose update stamp=(1790753726, 955963197), origin=(1790753726, 667341564), source=pose_matrix
+[INFO] [1790753727.357085526] [isaacfp_seed_tracking_bridge]: Sent same-frame GXF kick copy 1/2; origin=(1790753727, 7587150)
+[INFO] [1790753727.383660240] [isaacfp_seed_tracking_bridge]: Mapped tracker detection source=(1790753727, 7587150) to original=(1790753727, 7587150); latency=327 ms
+[WARN] [1790753727.384087817] [isaacfp_seed_tracking_bridge]: Using Detection3D center as tracker pose feedback for origin=(1790753727, 7587150); pose_matrix_output has not arrived
+[INFO] [1790753727.707058889] [isaacfp_seed_tracking_bridge]: Sent same-frame GXF kick copy 1/2; origin=(1790753727, 411554965)
+[WARN] [1790753737.455864199] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=10s; not forwarding another recorded frame
+[WARN] [1790753747.505741511] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=20s; not forwarding another recorded frame
+[WARN] [1790753757.555774197] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=30s; not forwarding another recorded frame
+[WARN] [1790753767.605708708] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=40s; not forwarding another recorded frame
+[WARN] [1790753777.655871059] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=50s; not forwarding another recorded frame
+[WARN] [1790753787.706036008] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=60s; not forwarding another recorded frame
+[WARN] [1790753797.756099761] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=70s; not forwarding another recorded frame
+[WARN] [1790753807.806233861] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=80s; not forwarding another recorded frame
+[WARN] [1790753817.855697958] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=90s; not forwarding another recorded frame
+[WARN] [1790753827.905760205] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=100s; not forwarding another recorded frame
+[WARN] [1790753837.956256361] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=111s; not forwarding another recorded frame
+[WARN] [1790753848.006107007] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=121s; not forwarding another recorded frame
+[WARN] [1790753858.056120704] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=131s; not forwarding another recorded frame
+[WARN] [1790753868.105927959] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=141s; not forwarding another recorded frame
+[WARN] [1790753878.156239785] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=151s; not forwarding another recorded frame
+[WARN] [1790753888.206257941] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=161s; not forwarding another recorded frame
+[WARN] [1790753898.255758443] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=171s; not forwarding another recorded frame
+[WARN] [1790753908.306215456] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=181s; not forwarding another recorded frame
+[WARN] [1790753918.356251174] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=191s; not forwarding another recorded frame
+[WARN] [1790753928.405726237] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=201s; not forwarding another recorded frame
+[WARN] [1790753938.456254415] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=211s; not forwarding another recorded frame
+[WARN] [1790753948.505927535] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=221s; not forwarding another recorded frame
+[WARN] [1790753958.556179726] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=231s; not forwarding another recorded frame
+[WARN] [1790753968.606111913] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=241s; not forwarding another recorded frame
+[WARN] [1790753978.655852847] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=251s; not forwarding another recorded frame
+[WARN] [1790753988.705759947] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=261s; not forwarding another recorded frame
+[WARN] [1790753998.756039519] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=271s; not forwarding another recorded frame
+[WARN] [1790754008.805706943] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=281s; not forwarding another recorded frame
+[WARN] [1790754018.855862168] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=291s; not forwarding another recorded frame
+[WARN] [1790754028.905769598] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=301s; not forwarding another recorded frame
+[WARN] [1790754038.956275636] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=312s; not forwarding another recorded frame
+[WARN] [1790754049.005983797] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753727, 411554965); elapsed=322s; not forwarding another recorded frame

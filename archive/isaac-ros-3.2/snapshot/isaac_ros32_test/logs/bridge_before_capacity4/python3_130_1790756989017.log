@@ -1,0 +1,2 @@
+[INFO] [1790756989.072066625] [isaacfp_seed_tracking_bridge]: Loaded original first-frame pose from /workspace/6Dpose/outputs/zed_foundationpose/ob_in_cam/000000.txt
+[INFO] [1790756989.112693081] [isaacfp_seed_tracking_bridge]: Tracker subscribers image/depth/info/pose=(1, 1, 1, 1)

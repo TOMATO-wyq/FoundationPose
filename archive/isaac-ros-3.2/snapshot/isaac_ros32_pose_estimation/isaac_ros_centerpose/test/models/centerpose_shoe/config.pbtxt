@@ -1,0 +1,52 @@
+name: "centerpose_shoe"
+platform: "tensorrt_plan"
+max_batch_size: 0
+input [
+  {
+    name: "input"
+    data_type: TYPE_FP32
+    dims: [ 1, 3, 512, 512 ]
+  }
+]
+output [
+  {
+    name: "bboxes"
+    data_type: TYPE_FP32
+    dims: [ 1, 100, 4 ]
+  },
+  {
+    name: "scores"
+    data_type: TYPE_FP32
+    dims: [ 1, 100, 1 ]
+  },
+  {
+    name: "kps"
+    data_type: TYPE_FP32
+    dims: [ 1, 100, 16 ]
+  },
+  {
+    name: "clses"
+    data_type: TYPE_FP32
+    dims: [ 1, 100, 1 ]
+  },
+  {
+    name: "obj_scale"
+    data_type: TYPE_FP32
+    dims: [ 1, 100, 3 ]
+  },
+  {
+    name: "kps_displacement_mean"
+    data_type: TYPE_FP32
+    dims: [ 1, 100, 16 ]
+  },
+  {
+    name: "kps_heatmap_mean"
+    data_type: TYPE_FP32
+    dims: [ 1, 100, 16 ]
+  }
+]
+version_policy: {
+  specific {
+    versions: [ 1 ]
+  }
+}

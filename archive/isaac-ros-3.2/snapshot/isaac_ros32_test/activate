@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Usage: source ~/code/isaac_ros32_test/activate
+# Use a subshell so sourcing does not change the caller's shell.
+(
+  set -euo pipefail
+  test_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  image=foundationpose:isaac32-ros
+  docker_cmd=(docker)
+  if ! docker info >/dev/null 2>&1; then
+    docker_cmd=(sudo docker)
+  fi
+  if ! "${docker_cmd[@]}" image inspect "$image" >/dev/null 2>&1; then
+    printf 'Isaac ROS image is not built yet. Run:\n' >&2
+    printf '  cd %s\n' "$test_root" >&2
+    printf '  sudo docker build --progress=plain -f Dockerfile.isaac-ros -t %s .\n' "$image" >&2
+    exit 1
+  fi
+  graph_mount=()
+  if [[ "${ISAACFP_TRACKING_GRAPH_OVERLAY:-0}" == "1" ]]; then
+    # 可选同步缓冲实验；只覆盖当前容器里的 tracker 图文件，不改镜像。
+    graph_mount=(--mount "type=bind,src=$test_root/experiments/nitros_foundationpose_tracking_node_capacity4.yaml,dst=/opt/ros/humble/share/isaac_ros_foundationpose/config/nitros_foundationpose_tracking_node.yaml,readonly")
+  fi
+  "${docker_cmd[@]}" run --rm -it --gpus all --network host --ipc host \
+    --user "$(id -u):$(id -g)" \
+    --mount type=bind,src=/etc/passwd,dst=/etc/passwd,readonly \
+    --mount type=bind,src=/etc/group,dst=/etc/group,readonly \
+    -e HOME=/tmp \
+    -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}" \
+    -v "$test_root:/work" \
+    -v /home/tomato/6Dpose:/workspace/6Dpose:ro \
+    "${graph_mount[@]}" \
+    -w /work \
+    "$image" bash --noprofile --rcfile /work/isaacfp.bashrc -i
+)

@@ -1,0 +1,15 @@
+[INFO] [1790752924.920511064] [isaacfp_seed_tracking_bridge]: Loaded original first-frame pose from /workspace/6Dpose/outputs/zed_foundationpose/ob_in_cam/000000.txt
+[INFO] [1790752924.960795641] [isaacfp_seed_tracking_bridge]: Tracker subscribers image/depth/info/pose=(1, 1, 1, 1)
+[INFO] [1790753181.861368996] [isaacfp_seed_tracking_bridge]: Forwarded 1 RGB-D frames to tracker; pose updates=0; dropped input frames=0; input stamp=1790753181.830904923; pose tensor bytes=64
+[INFO] [1790753182.112061067] [isaacfp_seed_tracking_bridge]: Sent same-frame GXF kick copy 1/2; origin=(1790753181, 830904923)
+[INFO] [1790753182.411486648] [isaacfp_seed_tracking_bridge]: Sent same-frame GXF kick copy 2/2; origin=(1790753181, 830904923)
+[WARN] [1790753191.860715263] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753181, 830904923); elapsed=10s; not forwarding another recorded frame
+[WARN] [1790753201.911003164] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753181, 830904923); elapsed=20s; not forwarding another recorded frame
+[WARN] [1790753211.960543231] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753181, 830904923); elapsed=30s; not forwarding another recorded frame
+[WARN] [1790753222.010381481] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753181, 830904923); elapsed=40s; not forwarding another recorded frame
+[WARN] [1790753232.060403878] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753181, 830904923); elapsed=50s; not forwarding another recorded frame
+[WARN] [1790753242.110419873] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753181, 830904923); elapsed=60s; not forwarding another recorded frame
+[WARN] [1790753252.160376665] [isaacfp_seed_tracking_bridge]: Still waiting for tracker pose stamp=(1790753181, 830904923); elapsed=70s; not forwarding another recorded frame
+[INFO] [1790753255.097350917] [isaacfp_seed_tracking_bridge]: Mapped tracker detection source=(1790753181, 830904923) to original=(1790753181, 830904923); latency=73237 ms
+[WARN] [1790753255.098024290] [isaacfp_seed_tracking_bridge]: Using Detection3D center as tracker pose feedback for origin=(1790753181, 830904923); pose_matrix_output has not arrived
+[INFO] [1790753255.098260176] [isaacfp_seed_tracking_bridge]: Received 1 tracker pose updates; feedback latency=73238 ms; source=detection_fallback

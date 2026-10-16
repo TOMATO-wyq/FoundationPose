@@ -1,0 +1,47 @@
+FROM foundationpose:isaac32-trt109-probe
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    ROS_DISTRO=humble \
+    RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+
+# Follow the Isaac ROS 3.2 package repository and ROS 2 Humble package setup.
+# NVIDIA's CUDA repository and TensorRT 10.9 are inherited from the probe image.
+RUN curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+      -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && curl -fsSL https://isaac.download.nvidia.com/isaac-ros/repos.key \
+      | gpg --dearmor -o /usr/share/keyrings/isaac-ros-archive-keyring.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu jammy main" \
+      > /etc/apt/sources.list.d/ros2.list \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/isaac-ros-archive-keyring.gpg] https://isaac.download.nvidia.com/isaac-ros/release-3 jammy release-3.0" \
+      > /etc/apt/sources.list.d/isaac-ros.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+      ros-humble-ros-base \
+      ros-humble-gxf-isaac-message-compositor \
+      ros-humble-isaac-ros-foundationpose \
+    && rm -rf /var/lib/apt/lists/*
+
+# Isaac ROS 3.2's GXF FoundationPose extension links to CV-CUDA 0.5.
+# Use the same release as its official Dockerfile.base, then register its
+# nonstandard library directory with the dynamic linker.
+COPY vendor/nvcv-lib-0.5.0_beta-cuda12-x86_64-linux.deb /tmp/nvcv-lib.deb
+RUN dpkg -i /tmp/nvcv-lib.deb \
+    && echo /opt/nvidia/cvcuda0/lib/x86_64-linux-gnu \
+      > /etc/ld.so.conf.d/cvcuda.conf \
+    && ldconfig \
+    && rm /tmp/nvcv-lib.deb
+
+# The prebuilt FoundationPose ROS component links to NVIDIA VPI 3. Isaac ROS
+# release-3.2 installs this from NVIDIA's r36.4 x86_64/jammy repository.
+RUN curl -fsSL https://repo.download.nvidia.com/jetson/jetson-ota-public.asc \
+      | gpg --dearmor -o /usr/share/keyrings/nvidia-jetson-archive-keyring.gpg \
+    && echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/nvidia-jetson-archive-keyring.gpg] https://repo.download.nvidia.com/jetson/x86_64/jammy r36.4 main' \
+      > /etc/apt/sources.list.d/nvidia-vpi.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends libnvvpi3 \
+    && printf '/opt/nvidia/vpi3/lib/x86_64-linux-gnu\n/opt/nvidia/vpi3/lib64\n' \
+      > /etc/ld.so.conf.d/nvidia-vpi.conf \
+    && ldconfig \
+    && rm -rf /var/lib/apt/lists/*
+
+CMD ["bash"]

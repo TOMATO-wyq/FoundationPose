@@ -1,0 +1,7 @@
+{
+  "render_to_next_refine_tick_samples": 119,
+  "first_seconds": 69.91300000000047,
+  "median_seconds": 0.0010000000002037268,
+  "max_seconds": 69.91300000000047,
+  "note": "Stage-to-stage log intervals, not isolated GPU kernel timings. Includes host work and scheduling."
+}

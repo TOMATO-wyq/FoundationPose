@@ -1,0 +1,58 @@
+[INFO] [launch]: All log files can be found below /tmp/.ros/log/2026-09-28-09-38-22-532663-wyq-94
+[INFO] [launch]: Default logging verbosity is set to INFO
+[INFO] [component_container_mt-1]: process started with pid [107]
+[component_container_mt-1] [INFO] [1790588302.873702634] [foundationpose_container.foundationpose_container]: Load Library: /opt/ros/humble/lib/libfoundationpose_node.so
+[component_container_mt-1] [INFO] [1790588302.898465081] [foundationpose_container.foundationpose_container]: Found class: rclcpp_components::NodeFactoryTemplate<nvidia::isaac_ros::foundationpose::FoundationPoseNode>
+[component_container_mt-1] [INFO] [1790588302.898543738] [foundationpose_container.foundationpose_container]: Instantiate class: rclcpp_components::NodeFactoryTemplate<nvidia::isaac_ros::foundationpose::FoundationPoseNode>
+[component_container_mt-1] [INFO] [1790588303.058441039] [foundationpose]: [NitrosNode] Initializing NitrosNode
+[component_container_mt-1] [INFO] [1790588303.058671688] [NitrosContext]: [NitrosContext] Loading extension: gxf/lib/std/libgxf_std.so
+[component_container_mt-1] [INFO] [1790588303.059370295] [NitrosContext]: [NitrosContext] Loading extension: gxf/lib/libgxf_isaac_gxf_helpers.so
+[component_container_mt-1] [INFO] [1790588303.061093700] [NitrosContext]: [NitrosContext] Loading extension: gxf/lib/libgxf_isaac_sight.so
+[component_container_mt-1] [INFO] [1790588303.062812297] [NitrosContext]: [NitrosContext] Loading extension: gxf/lib/libgxf_isaac_atlas.so
+[component_container_mt-1] [33m2026-09-28 09:38:23.067 WARN  external/com_nvidia_gxf/gxf/std/program.cpp@538: No GXF scheduler specified.[0m
+[component_container_mt-1] [INFO] [1790588303.067969071] [foundationpose]: [NitrosNode] Starting NitrosNode
+[component_container_mt-1] [INFO] [1790588303.070207699] [foundationpose]: [NitrosNode] Loading extensions
+[component_container_mt-1] [INFO] [1790588303.070233030] [foundationpose]: [NitrosContext] Loading extension: gxf/lib/multimedia/libgxf_multimedia.so
+[component_container_mt-1] [INFO] [1790588303.071449034] [foundationpose]: [NitrosContext] Loading extension: gxf/lib/libgxf_isaac_message_compositor.so
+[component_container_mt-1] [INFO] [1790588303.071623753] [foundationpose]: [NitrosContext] Loading extension: gxf/lib/serialization/libgxf_serialization.so
+[component_container_mt-1] [INFO] [1790588303.073385029] [foundationpose]: [NitrosContext] Loading extension: gxf/lib/cuda/libgxf_cuda.so
+[component_container_mt-1] [INFO] [1790588303.074731261] [foundationpose]: [NitrosContext] Loading extension: gxf/lib/libgxf_isaac_depth_image_proc.so
+[component_container_mt-1] [INFO] [1790588303.176044728] [foundationpose]: [NitrosContext] Loading extension: gxf/lib/libgxf_isaac_sgm.so
+[component_container_mt-1] [INFO] [1790588303.180933813] [foundationpose]: [NitrosContext] Loading extension: gxf/lib/libgxf_isaac_messages.so
+[component_container_mt-1] [INFO] [1790588303.181248106] [foundationpose]: [NitrosContext] Loading extension: gxf/lib/libgxf_isaac_ros_messages.so
+[component_container_mt-1] [INFO] [1790588303.181334614] [foundationpose]: [NitrosContext] Loading extension: gxf/lib/libgxf_isaac_tensor_rt.so
+[component_container_mt-1] [INFO] [1790588303.202118769] [foundationpose]: [NitrosContext] Loading extension: gxf/lib/libgxf_isaac_foundationpose.so
+[component_container_mt-1] [INFO] [1790588303.333445615] [foundationpose]: [NitrosNode] Loading graph to the optimizer
+[component_container_mt-1] [INFO] [1790588303.340444794] [foundationpose]: [NitrosNode] Running optimization
+[component_container_mt-1] [INFO] [1790588303.674083761] [foundationpose]: [NitrosNode] Obtaining graph IO group info from the optimizer
+[component_container_mt-1] [INFO] [1790588303.681806967] [foundationpose]: [NitrosNode] Starting negotiation...
+[INFO] [launch_ros.actions.load_composable_nodes]: Loaded node '/foundationpose' in container '/foundationpose_container/foundationpose_container'
+[component_container_mt-1] [INFO] [1790588304.682159474] [foundationpose]: [NitrosNode] Starting post negotiation setup
+[component_container_mt-1] [INFO] [1790588304.682318066] [foundationpose]: [NitrosNode] Getting data format negotiation results
+[component_container_mt-1] [INFO] [1790588304.682344709] [foundationpose]: [NitrosPublisher] Negotiation ended with no results
+[component_container_mt-1] [INFO] [1790588304.682358801] [foundationpose]: [NitrosPublisher] Use only the compatible publisher: topic_name="/output", data_format="nitros_detection3_d_array"
+[component_container_mt-1] [INFO] [1790588304.682370520] [foundationpose]: [NitrosPublisher] Negotiation ended with no results
+[component_container_mt-1] [INFO] [1790588304.682378592] [foundationpose]: [NitrosPublisher] Use only the compatible publisher: topic_name="/pose_estimation/pose_matrix_output", data_format="nitros_tensor_list_nchw"
+[component_container_mt-1] [INFO] [1790588304.682394247] [foundationpose]: [NitrosSubscriber] Negotiation ended with no results
+[component_container_mt-1] [INFO] [1790588304.682407348] [foundationpose]: [NitrosSubscriber] Use the compatible subscriber: topic_name="/rgb/image_rect_color", data_format="nitros_image_rgb8"
+[component_container_mt-1] [INFO] [1790588304.682428251] [foundationpose]: [NitrosSubscriber] Negotiation ended with no results
+[component_container_mt-1] [INFO] [1790588304.682435202] [foundationpose]: [NitrosSubscriber] Use the compatible subscriber: topic_name="/rgb/camera_info", data_format="nitros_camera_info"
+[component_container_mt-1] [INFO] [1790588304.682443405] [foundationpose]: [NitrosSubscriber] Negotiation ended with no results
+[component_container_mt-1] [INFO] [1790588304.682533569] [foundationpose]: [NitrosSubscriber] Use the compatible subscriber: topic_name="/segmentation", data_format="nitros_image_mono8"
+[component_container_mt-1] [INFO] [1790588304.682542823] [foundationpose]: [NitrosSubscriber] Negotiation ended with no results
+[component_container_mt-1] [INFO] [1790588304.682585972] [foundationpose]: [NitrosSubscriber] Use the compatible subscriber: topic_name="/depth_registered/image_rect", data_format="nitros_image_32FC1"
+[component_container_mt-1] [INFO] [1790588304.682940645] [foundationpose]: [NitrosNode] Exporting the final graph based on the negotiation results
+[component_container_mt-1] [INFO] [1790588307.203619332] [foundationpose]: [NitrosNode] Wrote the final top level YAML graph to "/tmp/isaac_ros_nitros/graphs/ZEDNWYLMWH/ZEDNWYLMWH.yaml"
+[component_container_mt-1] [INFO] [1790588307.203693517] [foundationpose]: [NitrosNode] Loading application
+[component_container_mt-1] [33m2026-09-28 09:38:27.207 WARN  external/com_nvidia_gxf/gxf/std/yaml_file_loader.cpp@1076: Using unregistered parameter 'receiver' in component ''.[0m
+[component_container_mt-1] [33m2026-09-28 09:38:27.208 WARN  external/com_nvidia_gxf/gxf/std/yaml_file_loader.cpp@1076: Using unregistered parameter 'dummy_rx' in component ''.[0m
+[component_container_mt-1] [33m2026-09-28 09:38:27.208 WARN  external/com_nvidia_gxf/gxf/std/yaml_file_loader.cpp@1076: Using unregistered parameter 'dummy_rx' in component ''.[0m
+[component_container_mt-1] [33m2026-09-28 09:38:27.208 WARN  external/com_nvidia_gxf/gxf/std/yaml_file_loader.cpp@1076: Using unregistered parameter 'dev_id' in component 'stream'.[0m
+[component_container_mt-1] [INFO] [1790588307.209196497] [foundationpose]: [NitrosNode] Initializing and running GXF graph
+[component_container_mt-1] [33m2026-09-28 09:38:27.221 WARN  external/com_nvidia_gxf/gxf/std/scheduling_terms.cpp@333: 'min_size' parameter in MultiMessageAvailableSchedulingTerm is deprecated. Use 'min_sum' with SumOfAll sampling mode instead[0m
+[component_container_mt-1] [33m2026-09-28 09:38:27.222 WARN  external/com_nvidia_gxf/gxf/std/scheduling_terms.cpp@333: 'min_size' parameter in MultiMessageAvailableSchedulingTerm is deprecated. Use 'min_sum' with SumOfAll sampling mode instead[0m
+[component_container_mt-1] [33m2026-09-28 09:38:27.222 WARN  external/com_nvidia_gxf/gxf/std/scheduling_terms.cpp@333: 'min_size' parameter in MultiMessageAvailableSchedulingTerm is deprecated. Use 'min_sum' with SumOfAll sampling mode instead[0m
+[component_container_mt-1] [33m2026-09-28 09:38:27.222 WARN  external/com_nvidia_gxf/gxf/std/scheduling_terms.cpp@333: 'min_size' parameter in MultiMessageAvailableSchedulingTerm is deprecated. Use 'min_sum' with SumOfAll sampling mode instead[0m
+[component_container_mt-1] [33m2026-09-28 09:38:27.222 WARN  external/com_nvidia_gxf/gxf/std/scheduling_terms.cpp@333: 'min_size' parameter in MultiMessageAvailableSchedulingTerm is deprecated. Use 'min_sum' with SumOfAll sampling mode instead[0m
+[component_container_mt-1] [33m2026-09-28 09:38:27.223 WARN  external/com_nvidia_gxf/gxf/std/scheduling_terms.cpp@333: 'min_size' parameter in MultiMessageAvailableSchedulingTerm is deprecated. Use 'min_sum' with SumOfAll sampling mode instead[0m
+[component_container_mt-1] [INFO] [1790588307.223621515] [foundationpose]: [NitrosNode] Node was started

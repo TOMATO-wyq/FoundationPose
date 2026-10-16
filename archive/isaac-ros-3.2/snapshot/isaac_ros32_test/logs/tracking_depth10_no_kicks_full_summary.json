@@ -1,0 +1,18 @@
+{
+  "configuration": {
+    "ros_executor": "component_container",
+    "input_qos_depth": 10,
+    "kick_copies": 0,
+    "frame_stride": 2,
+    "diagnostics": true
+  },
+  "completed_frames": 502,
+  "cache_hits": 502,
+  "offline_pose_reseeds": 0,
+  "waiting_warnings": 0,
+  "latency_median_seconds": 0.06087803840637207,
+  "latency_p95_seconds": 1.8757424354553223,
+  "latency_max_seconds": 3.014218330383301,
+  "coverage_min": 0.801,
+  "scope": "Original FoundationPose first-frame seed + Isaac tracking; no accuracy ground truth comparison; detailed logging enabled."
+}

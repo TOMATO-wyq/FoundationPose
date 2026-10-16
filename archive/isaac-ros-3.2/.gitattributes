@@ -1,0 +1,3 @@
+# Preserve archived bytes; all large assets are ordinary Git blobs, not LFS.
+snapshot/** -text -filter
+provenance/** -text -filter

@@ -1,0 +1,2 @@
+origin	https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_pose_estimation.git (fetch)
+origin	https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_pose_estimation.git (push)
