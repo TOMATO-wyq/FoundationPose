@@ -1,0 +1,15 @@
+{
+  "sizes_m": [0.20, 0.35],
+  "dimensions_nominal": true,
+  "up_camera": null,
+  "roi_xyxy": null,
+  "method": "hybrid",
+  "max_objects": 3,
+  "plane_proposals": true,
+  "plane_grid_step": 8,
+  "allow_stack_inference": true,
+  "refine_4d": true,
+  "opencv_threads": 1,
+  "analyze_colors": true,
+  "two_color_sizes_m": [0.20]
+}

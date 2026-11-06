@@ -1,0 +1,4 @@
+# Indoor 50 Hz lighting. 1 = 50 Hz, 2 = 60 Hz, 3 = Auto.
+# These sensor options are passed via config_file, not launch arguments.
+rgb_camera.power_line_frequency: 1
+rgb_camera.auto_exposure_priority: false

@@ -40,7 +40,7 @@ case "${1:-shell}" in
       echo "Expected host v5.5.0 commit: $expected_zed_ros2_ref" >&2
       exit 1
     }
-    zed_group_id=$(getent group zed | cut -d: -f3)
+    zed_group_id=$(getent group zed | cut -d: -f3 || true)
     zed_group_id=${zed_group_id:-1001}
     # The host uses a TUN/virtual adapter whose DNS returns Fake-IP addresses
     # (for example 28.0.0.0/8).  BuildKit's default bridge cannot route those
@@ -72,7 +72,7 @@ case "${1:-shell}" in
       -v "$project_root:/workspace/6Dpose"
       -w /workspace/6Dpose/FoundationPose)
     for group_name in video zed; do
-      group_id=$(getent group "$group_name" | cut -d: -f3)
+      group_id=$(getent group "$group_name" | cut -d: -f3 || true)
       [[ -n "$group_id" ]] && args+=(--group-add "$group_id")
     done
     [[ -d /usr/local/zed/settings ]] && args+=(

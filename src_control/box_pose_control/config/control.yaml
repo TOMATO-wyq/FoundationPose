@@ -1,0 +1,19 @@
+box_pose_control:
+  ros__parameters:
+    dry_run: true
+    start_enabled: true
+    control_rate: 10.0
+    target_distance_m: 0.30
+    lateral_gain: 1.0
+    forward_gain: 1.0
+    lateral_tolerance_m: 0.01
+    distance_tolerance_m: 0.02
+    lateral_resume_m: 0.015
+    distance_resume_m: 0.03
+    max_forward_speed: 0.10
+    max_lateral_speed: 0.10
+    observation_timeout_s: 0.5
+    detections_topic: /box4d/detections
+    up_topic: /box4d/up_camera
+    serial_port: /dev/ttyUSB0
+    baudrate: 961200

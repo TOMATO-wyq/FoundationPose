@@ -1,0 +1,8 @@
+# Tested on system Python 3.10: NumPy 1.21.5, OpenCV 4.5.4, SciPy 1.8.0.
+# ROS2 live input additionally uses the platform's rclpy/cv_bridge/realsense2_camera_msgs.
+# Original geometry mode requires no Torch, CUDA, Open3D or neural weights.
+# Optional YOLO-seg mode also needs ultralytics and a matching torch runtime;
+# the existing box_seg_annotation environment supplies these on this machine.
+numpy>=1.21.5,<2
+opencv-python>=4.5.4,<4.12
+scipy>=1.8.0,<2

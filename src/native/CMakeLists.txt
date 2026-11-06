@@ -1,0 +1,15 @@
+cmake_minimum_required(VERSION 3.18)
+project(box4d_geometry LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+find_package(Python3 REQUIRED COMPONENTS Interpreter Development.Module)
+find_package(Eigen3 3.3 REQUIRED NO_MODULE)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d)
+find_path(PYBIND11_INCLUDE_DIR pybind11/pybind11.h REQUIRED)
+Python3_add_library(_geometry_native MODULE WITH_SOABI geometry.cpp core_ops.cpp image_ops.cpp face_ops.cpp refinement_ops.cpp)
+target_include_directories(_geometry_native PRIVATE ${PYBIND11_INCLUDE_DIR} ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(_geometry_native PRIVATE Eigen3::Eigen ${OpenCV_LIBS})
+target_compile_options(_geometry_native PRIVATE -Wall -Wextra)
+set_target_properties(_geometry_native PROPERTIES
+    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../box4d")

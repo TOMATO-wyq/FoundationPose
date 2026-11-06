@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import box_train_seg as training
+from tools.yolo import box_train_seg as training
 
 
 class TrainingOptionsTests(unittest.TestCase):
