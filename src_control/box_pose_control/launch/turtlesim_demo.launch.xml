@@ -1,0 +1,51 @@
+<launch>
+  <!-- turtlesim 版视觉伺服演示：camera 海龟由 box_pose_control 的速度指令驱动。 -->
+  <arg name="size" default="big"/>
+  <arg name="target_distance_m" default="0.30"/>
+  <arg name="target_lateral_m" default="0.0"/>
+  <arg name="max_forward_speed" default="0.10"/>
+  <arg name="max_lateral_speed" default="0.10"/>
+  <arg name="meters_per_unit" default="0.1"/>
+  <arg name="initial_forward_units" default="3.5"/>
+  <arg name="initial_left_units" default="1.5"/>
+  <arg name="spawn_x" default="2.0"/>
+  <arg name="spawn_y" default="2.0"/>
+  <arg name="spawn_theta" default="0.0"/>
+  <!-- static：方块瞬移一次后静止；sweep：方块持续扫动，camera 实时跟踪。 -->
+  <arg name="box_motion" default="static"/>
+  <arg name="box_sweep_lateral_units" default="1.2"/>
+  <arg name="box_sweep_forward_units" default="0.5"/>
+  <arg name="box_sweep_period_s" default="10.0"/>
+
+  <node pkg="turtlesim" exec="turtlesim_node" name="turtlesim" output="screen"/>
+
+  <node pkg="box_pose_control" exec="turtlesim_pose_sim" name="turtlesim_pose_sim"
+        output="screen">
+    <param name="size" value="$(var size)"/>
+    <param name="camera_name" value="camera"/>
+    <param name="box_name" value="turtle1"/>
+    <param name="spawn_x" value="$(var spawn_x)"/>
+    <param name="spawn_y" value="$(var spawn_y)"/>
+    <param name="spawn_theta" value="$(var spawn_theta)"/>
+    <param name="initial_forward_units" value="$(var initial_forward_units)"/>
+    <param name="initial_left_units" value="$(var initial_left_units)"/>
+    <param name="meters_per_unit" value="$(var meters_per_unit)"/>
+    <param name="box_motion" value="$(var box_motion)"/>
+    <param name="box_sweep_lateral_units" value="$(var box_sweep_lateral_units)"/>
+    <param name="box_sweep_forward_units" value="$(var box_sweep_forward_units)"/>
+    <param name="box_sweep_period_s" value="$(var box_sweep_period_s)"/>
+  </node>
+
+  <!-- 默认 dry_run：只计算和发布 Twist，不打开串口。 -->
+  <node pkg="box_pose_control" exec="box_pose_control_node" name="box_pose_control"
+        output="screen">
+    <param from="$(find-pkg-share box_pose_control)/config/control.yaml"/>
+    <param name="size" value="$(var size)"/>
+    <param name="target_lateral_m" value="$(var target_lateral_m)"/>
+    <param name="dry_run" value="true"/>
+    <param name="start_enabled" value="true"/>
+    <param name="target_distance_m" value="$(var target_distance_m)"/>
+    <param name="max_forward_speed" value="$(var max_forward_speed)"/>
+    <param name="max_lateral_speed" value="$(var max_lateral_speed)"/>
+  </node>
+</launch>

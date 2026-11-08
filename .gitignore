@@ -45,6 +45,7 @@ CMakeCache.txt
 # Downloaded / trained model weights
 /weights/
 *.pt
+!/src/models/tkk_small/best.pt
 *.pth
 *.ckpt
 *.onnx

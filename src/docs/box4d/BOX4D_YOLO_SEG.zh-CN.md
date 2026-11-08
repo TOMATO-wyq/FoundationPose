@@ -1,5 +1,7 @@
 # YOLO-seg 小块前端与原有方块位姿链路
 
+> 新电脑直接使用仓库内 `src/models/tkk_small/best.pt`，完整步骤见 [部署说明](../../../BOX4D_DEPLOY.zh-CN.md)。一键启动 `size:=small` 自动选择本配置和权重；下文旧机器环境路径仅用于已有环境。
+
 新配置：`src/config/box4d_d435i_yolo_live.json`。
 模型使用这次 400 轮训练的 `runs/tkk_seg_bg_from276_20261029_125307_400e/weights/best.pt`，任务为实例分割，类别为 `tkk`。
 

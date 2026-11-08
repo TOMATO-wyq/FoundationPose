@@ -6,9 +6,10 @@
 
 namespace box_pose_control {
 
-using VelocityFrame = std::array<std::uint8_t, 12>;
+using VelocityFrame = std::array<std::uint8_t, 10>;
 
-// 将底盘前进、左移速度（m/s）编码为旧控制板协议；角速度固定为零。
+// 编码为 A5 + int16_le(vx*1000, vy*1000, vw*10) + mode + CRC8 + FF。
+// 输入前进、左移速度单位为 m/s；当前仅控制平移，vw 和 mode 固定为零。
 VelocityFrame encode_velocity(double vx, double vy);
 
 // 仅负责串口生命周期和速度帧发送，不参与目标选择或位置控制。

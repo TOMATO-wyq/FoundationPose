@@ -112,7 +112,7 @@
   "color_min_fit": 0.9,
   "color_ambiguity_margin": 0.08,
   "color_min_coverage_fraction": 0.6,
-  "yolo_weights": "/home/tomato/6Dpose/runs/tkk_seg_bg_from276_20261029_125307_400e/weights/best.pt",
+  "yolo_weights": "../models/tkk_small/best.pt",
   "yolo_class": "tkk",
   "yolo_device": "cpu",
   "yolo_cpu_threads": 2,

@@ -1,0 +1,21 @@
+<launch>
+  <!-- 真实 Box4D 数据的只读海龟显示：终端 4 使用。
+       必须和真实识别/控制节点在同一个 ROS_DOMAIN_ID。 -->
+  <arg name="size" default="big"/>
+  <arg name="meters_per_unit" default="0.2"/>
+  <arg name="spawn_x" default="1.0"/>
+  <arg name="spawn_y" default="5.5"/>
+  <arg name="spawn_theta" default="0.0"/>
+  <arg name="target_id" default=""/>
+
+  <node pkg="turtlesim" exec="turtlesim_node" name="turtlesim" output="screen"/>
+  <node pkg="box_pose_control" exec="turtlesim_real_view" name="turtlesim_real_view"
+        output="screen">
+    <param name="size" value="$(var size)"/>
+    <param name="meters_per_unit" value="$(var meters_per_unit)"/>
+    <param name="spawn_x" value="$(var spawn_x)"/>
+    <param name="spawn_y" value="$(var spawn_y)"/>
+    <param name="spawn_theta" value="$(var spawn_theta)"/>
+    <param name="target_id" value="$(var target_id)"/>
+  </node>
+</launch>

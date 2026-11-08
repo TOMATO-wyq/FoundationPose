@@ -1,7 +1,8 @@
 """CPU feature tracking with current RGB-D validation and periodic redetection.
 
-Every recovered pose is measured from forward/backward LK correspondences,
-planar PnP and this frame's raw depth. No missing pose is held or extrapolated.
+Every recovered observation is measured from forward/backward LK correspondences,
+planar PnP and this frame's raw depth. Position predictions initialize tracking;
+missing-frame predictions are emitted separately by the instance Tracker.
 """
 
 from copy import deepcopy
@@ -10,6 +11,7 @@ import time
 
 import cv2
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 
 from .appearance import analyze_colors, classify_hsv
 from .detector import _edge_support, sample_face
@@ -33,6 +35,7 @@ from .geometry import (
     yaw_from_pose,
 )
 from .pose import Pipeline
+from .motion import PositionKalman
 from .scene import select_scene
 from .results import append_detection_checks, empty_result, refresh_detection_selection
 from .yolo import make_detection_pipeline
@@ -56,6 +59,7 @@ class TemporalPipeline:
         self.states = []
         self.last_detection = None
         self.last_stamp = None
+        self.last_frame_id = None
         self.reference = None
         self.region_pipelines = {}
         self.asynchronous = bool(live and cfg.async_detection)
@@ -163,8 +167,37 @@ class TemporalPipeline:
     def _empty_result(self, frame):
         return empty_result(frame, self.cfg, self.up)
 
+    def _motion_observation(self, frame, pose, previous_state=None):
+        """Only accepted RGB-D poses update the motion model, once per image."""
+        if not self.cfg.motion_prediction:
+            return None
+        motion = None if previous_state is None else previous_state.get("motion")
+        if motion is not None:
+            if motion.stamp_ns == frame.stamp_ns:
+                # Reseeding / face switching is correlated evidence in this image.
+                return motion
+            gap = (frame.stamp_ns - motion.stamp_ns) / 1e9
+            if 0 < gap <= max(self.cfg.track_max_gap_s, self.cfg.prediction_max_gap_s):
+                return motion.updated(pose[:3, 3], frame.stamp_ns)
+        return PositionKalman(pose[:3, 3], frame.stamp_ns, self.cfg)
+
+    def _predicted_pose(self, frame, state):
+        motion = state.get("motion")
+        if not self.cfg.motion_prediction or motion is None or not motion.can_predict(frame.stamp_ns):
+            return None
+        mean, _ = motion.predict(frame.stamp_ns)
+        pose = state["pose"].copy()
+        pose[:3, 3] = mean[:3]
+        return pose
+
+    def _motion_center(self, frame, state):
+        predicted = self._predicted_pose(frame, state)
+        return (state["pose"] if predicted is None else predicted)[:3, 3]
+
     def _joint_pose(self, frame, state, model, uv, samples, plane, diagnostics=None):
-        rv, tv, report = solve_joint(frame, state, model, uv, samples, plane, self.cfg)
+        predicted = self._predicted_pose(frame, state)
+        initial = state if predicted is None else dict(state, pose=predicted)
+        rv, tv, report = solve_joint(frame, initial, model, uv, samples, plane, self.cfg)
         if diagnostics is not None:
             diagnostics.update(report)
         return rv, tv
@@ -359,7 +392,12 @@ class TemporalPipeline:
         ) if bad]
         if failed:
             raise TrackingPoseRejected("current_pose_residuals", *failed)
-        if np.linalg.norm(pose[:3, 3] - state["pose"][:3, 3]) > cfg.track_max_distance_m:
+        predicted = self._predicted_pose(frame, state)
+        reference = state["pose"] if predicted is None else predicted
+        position_residual = float(np.linalg.norm(pose[:3, 3] - reference[:3, 3]))
+        trial.update(position_reference="last_observation" if predicted is None else "kf_prediction",
+                     position_residual_m=position_residual, position_limit_m=cfg.track_max_distance_m)
+        if position_residual > cfg.track_max_distance_m:
             raise TrackingPoseRejected("motion_validation", "position_jump")
         if cfg.up_camera is not None and pose[:3, 2] @ cfg.up_camera < np.cos(np.deg2rad(cfg.max_upright_tilt_deg)):
             raise TrackingPoseRejected("motion_validation", "upright_tilt")
@@ -451,7 +489,10 @@ class TemporalPipeline:
                     prior_pose = None if previous_state is None else previous_state.get("previous_pose")
                     if prior_pose is None:
                         prior_pose = old_pose
-                    check_state = dict(pose=prior_pose, normal_model=normal, quad_model=local)
+                    check_state = dict(
+                        pose=prior_pose, normal_model=normal, quad_model=local,
+                        motion=None if previous_state is None else previous_state.get("motion"),
+                    )
                     if distance is None:
                         edges = rgb_depth_edges(frame, self.cfg, gray=gray)[2]
                         distance = cv2.distanceTransform(255 - edges, cv2.DIST_L2, 3)
@@ -634,6 +675,7 @@ class TemporalPipeline:
                     previous_measured_plane_normal=(None if previous_state is None
                                                     else previous_state.get("previous_measured_plane_normal")),
                     direction_window=seed_window,
+                    motion=self._motion_observation(frame, pose, previous_state),
                 )
             except (ValueError, cv2.error) as error:
                 diagnostics.setdefault("face_rejections", []).append(str(error))
@@ -723,16 +765,42 @@ class TemporalPipeline:
         reprojection_limit = cfg.reprojection_limit(frame.camera)
         gap = (frame.stamp_ns - state["stamp"]) / 1e9
         diagnostics.update(gap_s=gap, features_before=len(state["points"]))
-        if gap <= 0 or gap > (cfg.track_max_gap_s if max_gap_s is None else max_gap_s):
+        predicted = self._predicted_pose(frame, state)
+        gap_limit = cfg.track_max_gap_s if max_gap_s is None else max_gap_s
+        if predicted is not None and max_gap_s is None:
+            gap_limit = max(gap_limit, cfg.prediction_max_gap_s)
+        if gap <= 0 or gap > gap_limit:
             raise ValueError("image tracking gap exceeds limit")
         p0 = state["points"]
         lk = dict(
             winSize=(21, 21), maxLevel=3, criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 25, 0.01)
         )
-        p1, s1, error = cv2.calcOpticalFlowPyrLK(state["gray"], gray, p0, None, **lk)
+        initial_points = None
+        if predicted is not None:
+            projected_xyz = transform_points(predicted, state["model"])
+            if np.all(projected_xyz[:, 2] > 0.001):
+                displacement = frame.camera.project(projected_xyz) - frame.camera.project(
+                    transform_points(state["pose"], state["model"])
+                )
+                proposed = p0 + displacement.astype(np.float32).reshape(-1, 1, 2)
+                if np.isfinite(proposed).all() and np.max(np.abs(proposed)) < 1e6:
+                    initial_points = np.ascontiguousarray(proposed)
+        diagnostics["motion_prediction_used"] = predicted is not None
+        diagnostics["flow_prediction_used"] = initial_points is not None
+        if predicted is not None:
+            diagnostics["predicted_center_camera_m"] = predicted[:3, 3].tolist()
+        forward_options = dict(lk)
+        if initial_points is not None:
+            forward_options["flags"] = cv2.OPTFLOW_USE_INITIAL_FLOW
+        p1, s1, error = cv2.calcOpticalFlowPyrLK(state["gray"], gray, p0, initial_points, **forward_options)
         if p1 is None:
             raise ValueError("optical flow failed")
-        back, s0, _ = cv2.calcOpticalFlowPyrLK(gray, state["gray"], p1, None, **lk)
+        backward_options = dict(lk)
+        if initial_points is not None:
+            backward_options["flags"] = cv2.OPTFLOW_USE_INITIAL_FLOW
+        back, s0, _ = cv2.calcOpticalFlowPyrLK(
+            gray, state["gray"], p1, None if initial_points is None else p0.copy(), **backward_options
+        )
         if back is None:
             raise ValueError("backward optical flow failed")
         fb_error_px = np.linalg.norm(back - p0, axis=2).ravel()
@@ -810,10 +878,11 @@ class TemporalPipeline:
                     )
                     found = list(zip(result[1], result[2]))
                 else:
+                    initial_pose = state["pose"] if predicted is None else predicted
                     ok, rv, tv = cv2.solvePnP(
                         np.ascontiguousarray(model), np.ascontiguousarray(b, dtype=np.float64),
                         frame.camera.k, frame.camera.d,
-                        cv2.Rodrigues(state["pose"][:3, :3])[0], state["pose"][:3, 3].copy(),
+                        cv2.Rodrigues(initial_pose[:3, :3])[0], initial_pose[:3, 3].copy(),
                         True, flags=cv2.SOLVEPNP_ITERATIVE,
                     )
                     found = [(rv, tv)] if ok else []
@@ -994,6 +1063,7 @@ class TemporalPipeline:
             direction_window_before=copy_direction_window(window),
             previous_measured_plane_normal=(None if previous_plane_normal is None else previous_plane_normal.copy()),
             direction_window=next_window,
+            motion=self._motion_observation(frame, pose, state),
         )
         return obj, new
 
@@ -1003,7 +1073,8 @@ class TemporalPipeline:
         if self.last_stamp is not None and frame.stamp_ns <= self.last_stamp:
             raise ValueError("temporal pipeline requires increasing frame timestamps")
         reference = (frame.camera.calibration_id, tuple(cfg.up_camera or ()))
-        if reference != self.reference:
+        if (reference != self.reference
+                or (self.last_frame_id is not None and frame.camera.frame_id != self.last_frame_id)):
             self.states = []
             self.last_detection = None
             self.reference = reference
@@ -1012,6 +1083,7 @@ class TemporalPipeline:
             self.last_debug = None
             self.local_debug = ()
         self.last_stamp = frame.stamp_ns
+        self.last_frame_id = frame.camera.frame_id
         gray = cv2.cvtColor(frame.rgb, cv2.COLOR_RGB2GRAY)
         _, _, edges = rgb_depth_edges(frame, cfg, gray=gray)
         distance = cv2.distanceTransform(255 - edges, cv2.DIST_L2, 3)
@@ -1037,7 +1109,8 @@ class TemporalPipeline:
             except (ValueError, cv2.error) as error:
                 failures.append(str(error))
                 failure_details.append(dict(details, reason=str(error)))
-                if (frame.stamp_ns - state["stamp"]) / 1e9 <= cfg.track_max_gap_s:
+                if ((frame.stamp_ns - state["stamp"]) / 1e9 <= cfg.track_max_gap_s
+                        or self._predicted_pose(frame, state) is not None):
                     pending.append(state)
             tracking_checks.append(details)
         tracking_end = time.perf_counter()
@@ -1193,6 +1266,7 @@ class TemporalPipeline:
                 if switch is not None:
                     # Feature model coordinates belong to the new pose: adopt
                     # the complete measured object/state together.
+                    candidate["motion"] = state.get("motion")
                     obj, state = fresh[i], candidate
                     state["direction_window"] = copy_direction_window()
                     face_switches.append((obj, switch))
@@ -1205,11 +1279,33 @@ class TemporalPipeline:
                 state["obj"] = deepcopy(obj)
             merged.append(obj)
             states.append(state)
+        # A new detection can recover a pending track's velocity without taking
+        # any old image/depth evidence. Associate one-to-one at predicted centers.
+        recovered_pending = {}
+        reacquired = {}
+        available = [i for i in range(len(fresh)) if i not in used]
+        if cfg.motion_prediction and available and pending:
+            costs = np.full((len(pending), len(available)), 1e6)
+            for row, state in enumerate(pending):
+                for column, index in enumerate(available):
+                    obj = fresh[index]
+                    if obj["size_m"] == state["obj"]["size_m"]:
+                        delta = np.linalg.norm(np.asarray(obj["center_camera_m"]) - self._motion_center(frame, state))
+                        if delta <= cfg.track_max_distance_m:
+                            costs[row, column] = delta
+            rows, columns = linear_sum_assignment(costs)
+            for row, column in zip(rows, columns):
+                if costs[row, column] < 1e5:
+                    reacquired[available[column]] = pending[row]
+                    recovered_pending[int(row)] = available[column]
         for i, obj in enumerate(fresh):
             if i in used:
                 continue
             merged.append(obj)
-            states.append(fresh_states.get(id(obj)) or self._seed(frame, obj, gray))
+            seed = fresh_states.get(id(obj)) or self._seed(frame, obj, gray)
+            if seed is not None and i in reacquired:
+                seed["motion"] = self._motion_observation(frame, seed["pose"], reacquired[i])
+            states.append(seed)
         selected, suppressed = select_scene(merged, cfg.max_objects, cfg.up_camera)
         active_pairs = [(o, s) for o, s in zip(merged, states)
                         if s is not None and any(o is chosen for chosen in selected)]
@@ -1239,10 +1335,15 @@ class TemporalPipeline:
         active = len(self.states)
         # Keep association/image memory briefly, without publishing any pose on
         # a failed frame. The next frame can retry against the last valid image.
-        for state in pending:
+        for index, state in enumerate(pending):
+            recovered_index = recovered_pending.get(index)
+            if recovered_index is not None and any(
+                o is fresh[recovered_index] for o, s in active_pairs
+            ):
+                continue
             if not any(
                 o["size_m"] == state["obj"]["size_m"]
-                and np.linalg.norm(np.asarray(o["center_camera_m"]) - state["pose"][:3, 3]) < 0.06
+                and np.linalg.norm(np.asarray(o["center_camera_m"]) - self._motion_center(frame, state)) < 0.06
                 for o in selected
             ):
                 self.states.append(state)

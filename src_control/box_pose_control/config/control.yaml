@@ -1,9 +1,11 @@
 box_pose_control:
   ros__parameters:
     dry_run: true
+    size: big
     start_enabled: true
     control_rate: 10.0
     target_distance_m: 0.30
+    target_lateral_m: 0.0
     lateral_gain: 1.0
     forward_gain: 1.0
     lateral_tolerance_m: 0.01

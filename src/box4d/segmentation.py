@@ -68,7 +68,7 @@ class YoloRegions:
         except ImportError as error:
             raise RuntimeError(
                 "YOLO-seg needs ultralytics and torch. Run box4d_ros.sh with "
-                "BOX4D_PYTHON=/home/tomato/code/box_seg_annotation/env/bin/python"
+                "BOX4D_PYTHON=<repo>/.venv-box4d/bin/python; see BOX4D_DEPLOY.zh-CN.md"
             ) from error
         path = Path(cfg.yolo_weights).expanduser()
         if path.is_dir():

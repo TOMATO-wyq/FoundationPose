@@ -102,6 +102,16 @@ class RosPosePublisherTests(unittest.TestCase):
         self.assertEqual(first_id, first.detections.messages[1].detections[0].id)
         self.assertNotEqual(first_id, second.detections.messages[0].detections[0].id)
 
+    def test_prediction_only_frame_does_not_publish_a_visual_measurement(self):
+        publisher = RosPosePublisher(FakeNode(), [0.0, -1.0, 0.0])
+        current = result([])
+        prediction = observation()
+        prediction.update(valid=False, status="predicted", source="kf_prediction")
+        current["predicted_objects"] = [prediction]
+        publisher.publish(current)
+        self.assertEqual(publisher.detections.messages[0].detections, [])
+        self.assertEqual(publisher.up.messages[0].header, publisher.detections.messages[0].header)
+
     def test_up_is_a_snapshot_and_result_up_does_not_override_it(self):
         up = [0.0, -1.0, 0.0]
         publisher = RosPosePublisher(FakeNode(), up)

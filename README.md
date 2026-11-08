@@ -1,5 +1,7 @@
 # 方块位姿识别、TKK 训练与 FoundationPose
 
+> 大小方块分开识别、底盘水平面 XY 跟随、新版串口协议和跨电脑部署：见 [Box4D 部署说明](BOX4D_DEPLOY.zh-CN.md)。小块 YOLO 权重已随仓库提供，启动使用 `size:=big` 或 `size:=small`。
+
 代码按工程分在两个目录：[src/](src/README.md) 放 Box4D 与 YOLO 工具，[src_fp/](src_fp/README.md) 放 FoundationPose/KFS 和相机桥接。各目录的 README 都有中文导航。
 
 独立的 [ROS 2 C++ 底盘控制模块](src_control/box_pose_control/README.md) 位于 `src_control/`：使用 Box4D 相机位姿保持方块中心在相机前约 30 cm，默认不开串口，以 10 Hz 输出速度预览和 INFO。识别命令增加 `--auto-up --publish-poses` 后即可连接。

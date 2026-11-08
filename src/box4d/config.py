@@ -64,6 +64,12 @@ class Config:
     detector_max_age_s: float = 0.75
     track_max_distance_m: float = 0.15
     smoothing_alpha: float = 0.5
+    motion_prediction: bool = True
+    prediction_max_gap_s: float = 0.30
+    prediction_max_std_m: float = 0.10
+    prediction_accel_std_m_s2: float = 1.0
+    prediction_measurement_std_m: float = 0.01
+    prediction_initial_velocity_std_m_s: float = 0.5
     track_min_features: int = 4
     track_seed_max_features: int = 40
     track_feature_method: str = "adaptive"
@@ -134,6 +140,7 @@ class Config:
             "allow_bottom_occlusion",
             "refine_4d",
             "tracking",
+            "motion_prediction",
             "temporal_recovery",
             "async_detection",
             "track_joint_on_ambiguity",
@@ -317,7 +324,15 @@ class Config:
             value = getattr(self, key)
             if not np.isfinite(value) or value <= 0:
                 raise ValueError(f"{key} must be positive and finite")
-        for key in ("track_direction_window_tau_s", "track_reseed_max_rotation_deg"):
+        for key in (
+            "track_direction_window_tau_s",
+            "track_reseed_max_rotation_deg",
+            "prediction_max_gap_s",
+            "prediction_max_std_m",
+            "prediction_accel_std_m_s2",
+            "prediction_measurement_std_m",
+            "prediction_initial_velocity_std_m_s",
+        ):
             value = getattr(self, key)
             if (
                 isinstance(value, bool)
@@ -428,7 +443,7 @@ class Config:
         )
 
     @classmethod
-    def load(cls, path=None, **overrides):
+    def load(cls, path=None, *, size=None, **overrides):
         values = {} if path is None else json.loads(Path(path).read_text())
         if not isinstance(values, dict):
             raise ValueError("configuration must be a JSON object")
@@ -436,4 +451,28 @@ class Config:
         if unknown:
             raise ValueError(f"unknown configuration options: {sorted(unknown)}")
         values.update({k: v for k, v in overrides.items() if v is not None})
-        return cls(**values).validate()
+        # JSON 内的相对权重路径以配置文件目录为基准；CLI 覆盖仍相对当前目录。
+        if path is not None and values.get("yolo_weights") and overrides.get("yolo_weights") is None:
+            weights = Path(values["yolo_weights"]).expanduser()
+            if not weights.is_absolute():
+                values["yolo_weights"] = str((Path(path).resolve().parent / weights).resolve())
+        cfg = cls(**values).validate()
+        if size is not None:
+            if size not in ("big", "small"):
+                raise ValueError("size must be big or small")
+            selected = 0.35 if size == "big" else 0.20
+            if not any(abs(s - selected) < 1e-6 for s in cfg.sizes_m):
+                raise ValueError(f"size={size} requires {selected} m in sizes_m")
+            cfg.sizes_m = (selected,)
+            cfg.two_color_sizes_m = tuple(s for s in cfg.two_color_sizes_m if abs(s - selected) < 1e-6)
+            cfg.track_face_switch_sizes_m = tuple(
+                s for s in cfg.track_face_switch_sizes_m if abs(s - selected) < 1e-6
+            )
+            yolo_sizes = tuple(s for s in cfg.yolo_sizes_m if abs(s - selected) < 1e-6)
+            if yolo_sizes:
+                cfg.yolo_sizes_m = yolo_sizes
+            else:
+                # 大块走原几何分支，不加载只为小块训练的分割模型。
+                cfg.yolo_weights = None
+            cfg.validate()
+        return cfg

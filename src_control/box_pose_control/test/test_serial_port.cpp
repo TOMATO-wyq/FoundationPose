@@ -13,11 +13,15 @@
 namespace box_pose_control {
 namespace {
 
-TEST(VelocityFrameTest, MatchesLegacyWireFormatAndCrc)
+TEST(VelocityFrameTest, MatchesPythonReferenceWireFormatAndCrc)
 {
+  // 由电控参考代码 struct.pack('<B h h h B', ...) + CRC8 + FF 得到。
   const VelocityFrame expected{
-    0xa5, 0x7b, 0x00, 0xd3, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0d, 0xff};
+    0xa5, 0x7b, 0x00, 0xd3, 0xff, 0x00, 0x00, 0x00, 0xa1, 0xff};
   EXPECT_EQ(encode_velocity(0.1239, -0.0459), expected);
+  const VelocityFrame reversed{
+    0xa5, 0x85, 0xff, 0x2d, 0x00, 0x00, 0x00, 0x00, 0x1f, 0xff};
+  EXPECT_EQ(encode_velocity(-0.1239, 0.0459), reversed);
 }
 
 TEST(VelocityFrameTest, ClampsBothSpeedsAtHardwareLimit)
@@ -30,10 +34,10 @@ TEST(VelocityFrameTest, ClampsBothSpeedsAtHardwareLimit)
   EXPECT_EQ(frame, encode_velocity(0.30, -0.30));
 }
 
-TEST(VelocityFrameTest, EncodesZeroSpeedWithoutAngularVelocityOrFlags)
+TEST(VelocityFrameTest, EncodesZeroSpeedWithZeroAngularVelocityAndMode)
 {
   const VelocityFrame expected{
-    0xa5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff};
+    0xa5, 0, 0, 0, 0, 0, 0, 0, 0, 0xff};
   EXPECT_EQ(encode_velocity(0.0, 0.0), expected);
   EXPECT_EQ(encode_velocity(0.0009, -0.0009), expected);
 }

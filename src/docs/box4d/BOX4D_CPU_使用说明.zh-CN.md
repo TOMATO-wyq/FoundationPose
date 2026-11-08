@@ -73,6 +73,12 @@ PYTHONPATH=src python3 -m unittest discover -s src/tests -p 'test_box4d_*.py' -v
 | `temporal_recovery` | 默认关闭，全图彩色配置开启；用当前图像特征与当前深度延续几何位姿，失败时不补发旧有效位姿 |
 | `async_detection` | 实时入口启用连续跟踪时，将重新检测放到后台；离线入口仍同步处理，保证回放可重复 |
 | `redetect_interval_s` | 重新搜索的周期，默认 0.15 秒；失去跟踪时提前搜索，后台只留最新待处理帧 |
+| `motion_prediction` | 默认 `true`；用位置/速度匀速 KF 预测短时漏检位置，与当前帧观测分开输出 |
+| `prediction_max_gap_s` | 从最后一次有效观测起最多预测的时间，默认 0.3 秒 |
+| `prediction_max_std_m` | 预测位置不确定度上限（标准差），默认 0.1 米；超过后停止预测输出 |
+| `prediction_accel_std_m_s2` | 匀速模型中未建模加速度的标准差，默认 1.0 m/s²；越大，不确定度增长越快 |
+| `prediction_measurement_std_m` | 视觉位置测量噪声的标准差，默认 0.01 米 |
+| `prediction_initial_velocity_std_m_s` | 新轨迹初始速度不确定度的标准差，默认 0.5 m/s |
 
 目前只实现正方体模型。若三边明显不同，不能只把某一条边填入 `sizes_m`；需要扩展长方体模型及其 180° 对称性。12% 尺寸门限用于候选校验，不代表允许 12% 的定位误差。
 
@@ -83,6 +89,16 @@ PYTHONPATH=src python3 -m unittest discover -s src/tests -p 'test_box4d_*.py' -v
 - `hybrid`：汇总深度/PnP 候选，有条件时加入多面 PnP，并进行 4 参数细化。合成数据中更稳妥的当前入口，最终主路径仍需真实数据对比。
 
 `pnp` 路径也需要深度，因为实例检测、尺度检验和平面双解校验都使用 RGB-D。它不是纯 RGB 单目方案。
+
+### 短时漏检预测
+
+KF 的状态为相机光学坐标系中的 `[X,Y,Z,Vx,Vy,Vz]`，速度表示目标相对相机的运动。它按**源图像时间戳**计算时间间隔，不按显示刷新次数预测；至少取得两次有效观测后，才在漏检时输出预测位置。重新得到观测时，用当前视觉位置校正状态，原始观测字段保持不变。
+
+预测位置用于目标关联、光流初值、迭代 PnP／联合求解初值，以及位移残差门控；当前 RGB-D 的深度、重投影和边界检查仍需通过。漏检预测单独输出到 `predicted_objects`。显示中以**紫色虚线三维框、`PRED` 和距最后观测的秒数**标识；普通显示和 `--display-smoothed` 都会显示。框的平移来自 KF，旋转保持最后一次实测值。它不预测转向，也没有融合 IMU 或里程计，因此突然加速、急转弯或长时间遮挡仍可能跟丢。超过预测时间或不确定度上限后，预测框消失。已有启动命令无需增加参数，重启识别进程即可使用默认配置；输出预测项需要开启 `tracking`，光流／PnP 预测初值还需要开启 `temporal_recovery`。
+
+`objects` 仍只包含当前帧通过校验的真实 RGB-D 观测，ROS `/box4d/detections` 也仍只发布这些有效观测。预测项带 `source="kf_prediction"`、`status="predicted"`、`valid=false`，不会冒充有效检测；当前控制器在没有有效观测时仍执行漏检停车。显示中的 `observed=0 predicted=1` 表示只有预测框，并未重新检测到目标。
+
+进行 A/B 对照时，复制同一份配置，把其中 `motion_prediction` 改为 `false`，用 `--config` 指向该副本，并重放同一段录制；其余检测参数保持一致。原有 `center_camera_smoothed_m` 是显示平滑结果，和这里用于补短时漏检的预测分开。
 
 ## 4. 坐标、yaw 与竖直参考
 
@@ -146,7 +162,7 @@ ROS_DOMAIN_ID=86 ros2 service call /camera/camera/hw_reset std_srvs/srv/Empty '{
 
 实时配置的 `max_reprojection_px=3` 以 `reprojection_reference_width_px=640` 为参考：1280 宽输入的实际门限为 6 像素，640 宽为 3 像素。检测、4D 优化和当前帧跟踪使用相同门限，实际值写入目标的 `metrics.reprojection_limit_px`。自定义配置不填写参考宽度时，仍按输入原始像素解释该门限。尺寸、深度残差和竖直约束保持原来的物理单位。
 
-`detector_max_age_s=0.75` 单独限制后台检测结果的年龄；`track_max_gap_s=0.3` 继续限制已有轨迹中断。1280×720 下检测耗时可能超过 300 毫秒，不能用轨迹间隔直接丢弃所有检测结果。延迟检测仍需通过当前图像的双向特征跟踪、当前深度和边界校验后才输出；目标移走或当前深度缺失时不会显示旧框。结果记录 `expired_detections` 和 `detector_seed_failures`，便于区分过期与当前帧校验失败。调整相机后应重启识别重新执行 `--auto-up`。
+`detector_max_age_s=0.75` 单独限制后台检测结果的年龄；`track_max_gap_s=0.3` 限制普通轨迹中断。可信 KF 预测可将轨迹恢复窗口延长至 `prediction_max_gap_s`（默认也是 0.3 秒），但不能绕过不确定度上限。1280×720 下检测耗时可能超过 300 毫秒，不能用轨迹间隔直接丢弃所有检测结果。延迟检测仍需通过当前图像的双向特征跟踪、当前深度和边界校验后才输出；目标移走或当前深度缺失时不会补发旧的有效观测。启用 KF 时，短时间内可能仍显示明确标记的紫色虚线预测框。结果记录 `expired_detections` 和 `detector_seed_failures`，便于区分过期与当前帧校验失败。调整相机后应重启识别重新执行 `--auto-up`。
 
 显示窗口按 Q/Esc 结束，R 重置跨帧关联。默认显示最多 30 Hz，识别和显示分别运行，显示刷新数不计作新位姿观测；该显示上限不限制相机采集与识别处理频率，可将 `--display-hz` 改为 60 观察更高刷新率。相机档位为请求值，稳定采集及处理 60 FPS 尚需实测。无界面验收去掉 `--display`。
 
@@ -232,6 +248,7 @@ python3 src/box4d/cli/benchmark.py outputs/box4d_capture_new --output outputs/bo
 | `received_monotonic_ns` | ROS 回调收到帧时的主机单调时钟；离线没有该时间时为 null |
 | `frame_id` / `calibration_id` | 相机光学坐标与标定编号 |
 | `objects` | 当前帧通过校验的目标，缺失时是空数组 |
+| `predicted_objects` | 当前帧未观测到、仍在时间及不确定度范围内的 KF 预测项；与 `objects` 分开，不作为有效检测发布 |
 | `track_id` | 位置、规格与周期角度关联得到的短时 ID，同色完全遮挡后不保证身份 |
 | `center_camera_m` / `T_camera_from_box` | 当前帧原始中心与模型变换，未做时间平滑 |
 | `yaw_u_rad` / `yaw_period_rad` | 原始 yaw 与 π/2 周期；无竖直参考时 yaw 为 null |
@@ -245,6 +262,8 @@ python3 src/box4d/cli/benchmark.py outputs/box4d_capture_new --output outputs/bo
 | `timing` | 检测、求解、细化与总核心计算耗时，单位 ms |
 | `temporal` | 当前特征跟踪数、失败原因、后台检测帧龄和耗时等；异步模式前台 `processing_ms` 不包含后台检测，不能用其倒数表示整体 FPS |
 | `appearance` | 开启颜色配置时的可见颜色、蓝→红轴、模型分界面与朝上/侧放状态；含歧义及推断依据 |
+
+`predicted_objects` 中的 `last_observed_stamp_ns` 为末次有效观测时间，`prediction_age_s` 为截至当前源帧的漏检时长，`position_covariance_m2` 为 3×3 位置协方差（单位 m²）。预测项没有复用旧 `faces` 或旧测量残差来表示当前证据。
 
 帧状态为 `observed`、`partial_or_rejected` 或 `no_target`。部分可见但无法可靠求完整中心的目标记录在候选拒绝信息中，当前没有独立输出“只有方向”的 partial 目标接口。
 

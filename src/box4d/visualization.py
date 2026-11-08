@@ -13,6 +13,57 @@ def _dashed(image, a, b, color):
         cv2.line(image, tuple(start), tuple(end), color, 1, cv2.LINE_AA)
 
 
+def _draw_predictions(image, frame, predictions):
+    """Draw extrapolated geometry without borrowing faces or measurement evidence."""
+    color = (220, 80, 255)
+    drawn = 0
+    for obj in predictions:
+        try:
+            pose = np.asarray(obj["T_camera_from_box"], dtype=np.float64)
+            size = float(obj["size_m"])
+            age = float(obj["prediction_age_s"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if (
+            pose.shape != (4, 4)
+            or not np.isfinite(pose).all()
+            or not np.isfinite(size)
+            or size <= 0
+            or not np.isfinite(age)
+            or age < 0
+        ):
+            continue
+        vertices = transform_points(pose, cube_vertices(size))
+        if not np.isfinite(vertices).all() or np.any(vertices[:, 2] <= 0.01):
+            continue
+        uv = frame.camera.project(np.vstack((vertices, pose[:3, 3])))
+        # Reject pathological projection before converting coordinates to integers.
+        limit = 8 * max(frame.camera.width, frame.camera.height)
+        if not np.isfinite(uv).all() or np.any(np.abs(uv) > limit):
+            continue
+        if (
+            np.max(uv[:8, 0]) < 0
+            or np.min(uv[:8, 0]) >= frame.camera.width
+            or np.max(uv[:8, 1]) < 0
+            or np.min(uv[:8, 1]) >= frame.camera.height
+        ):
+            continue
+        uv = np.rint(uv).astype(int)
+        for a, b in cube_edges():
+            _dashed(image, uv[a], uv[b], color)
+        center = uv[8]
+        cv2.drawMarker(image, tuple(center), color, cv2.MARKER_DIAMOND, 12, 1)
+        location = (
+            max(4, min(frame.camera.width - 250, center[0] - 70)),
+            max(55, min(frame.camera.height - 35, center[1] - 8)),
+        )
+        text = f"PRED ID{obj.get('track_id', '?')} {size * 100:.0f}cm age={age:.2f}s"
+        cv2.putText(image, text, location, cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(image, text, location, cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
+        drawn += 1
+    return drawn
+
+
 def overlay(frame, result, rates=None, smoothed=False):
     image = cv2.cvtColor(frame.rgb, cv2.COLOR_RGB2BGR)
     for obj in result["objects"]:
@@ -103,15 +154,19 @@ def overlay(frame, result, rates=None, smoothed=False):
                 if np.all(endpoints[:, 2] > 0.01):
                     a, b = np.rint(frame.camera.project(endpoints)).astype(int)
                     cv2.arrowedLine(image, tuple(a), tuple(b), (40, 40, 255), 2, cv2.LINE_AA, tipLength=0.2)
+    predicted_count = _draw_predictions(image, frame, result.get("predicted_objects", ()))
     processing = result["timing"]["processing_ms"]
     text = f"CPU {processing:.1f}ms  frame={frame.sequence}  observed={len(result['objects'])}"
     if "temporal" in result:
         text += f" tracked={result['temporal']['output_flow_objects']}"
+    if predicted_count:
+        text += f" predicted={predicted_count}"
     cv2.rectangle(image, (0, 0), (frame.camera.width, 43), (20, 20, 20), -1)
     cv2.putText(image, text, (8, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (240, 240, 240), 1, cv2.LINE_AA)
     note = (
         "Nominal dimensions; camera optical coordinates"
         if any(o["dimensions_nominal"] for o in result["objects"])
+        else "Camera optical coordinates; predicted geometry" if predicted_count and not result["objects"]
         else "Camera optical coordinates; current-frame observations"
     )
     if rates:
@@ -120,12 +175,18 @@ def overlay(frame, result, rates=None, smoothed=False):
         note += "  UP: provisional IMU"
     if smoothed:
         note += "  DISPLAY: filtered; raw logged"
+    if predicted_count:
+        note += "  PRED: dashed"
     cv2.putText(image, note, (8, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.37, (210, 210, 210), 1, cv2.LINE_AA)
     if not result["objects"]:
         message = (
-            "POSE REJECTED - see 08 Current tracking"
-            if result.get("frame_status") == "partial_or_rejected"
-            else "SEARCHING - no target observation"
+            "KF PREDICTION - no current target observation"
+            if predicted_count
+            else (
+                "POSE REJECTED - see 08 Current tracking"
+                if result.get("frame_status") == "partial_or_rejected"
+                else "SEARCHING - no target observation"
+            )
         )
         cv2.putText(
             image,

@@ -26,6 +26,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[2] / "config/box4d_cpu.json")
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--size", choices=("big", "small"), help="recognize and track only big (0.35 m) or small (0.20 m) cubes")
     p.add_argument("--topic", default="/camera/camera/rgbd")
     p.add_argument("--up-camera", type=float, nargs=3)
     p.add_argument("--up-calibration", type=Path, help="stationary IMU UP report, with reference provenance")
@@ -101,6 +102,7 @@ def main():
         p.error("--auto-up cannot be combined with manual UP vector/plane")
     cfg = Config.load(
         args.config,
+        size=args.size,
         method=args.method,
         plane_backend=args.plane_backend,
         geometry_backend=args.geometry_backend,

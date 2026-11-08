@@ -44,6 +44,11 @@ class ControlNode : public rclcpp::Node {
       controller_(parameters_) {
     // dry_run 仍完成整套控制计算，只跳过串口打开和写入，便于不开底盘观察。
     dry_run_ = startup_parameter("dry_run", true);
+    size_ = startup_parameter("size", std::string("big"));
+    if (size_ != "big" && size_ != "small") {
+      throw std::invalid_argument("size must be big or small");
+    }
+    target_size_m_ = size_ == "big" ? 0.35 : 0.20;
     const auto rate = startup_parameter("control_rate", 10.0);
     timeout_ = startup_parameter("observation_timeout_s", 0.5);
     serial_path_ = startup_parameter("serial_port", std::string("/dev/ttyUSB0"));
@@ -66,26 +71,29 @@ class ControlNode : public rclcpp::Node {
           response->success = set_enabled(request->data);
           response->message = state_;
         });
-    // 仅目标距离允许运行时修改；先检查本次更新，再重置控制器的到位记忆。
-    // 改距离不更换已锁定的方块，下一次 tick 按新距离重新计算。
+    // 目标水平坐标允许运行时修改；更新后重置到位记忆，不更换锁定目标。
     parameter_callback_ = add_on_set_parameters_callback(
         [this](const std::vector<rclcpp::Parameter> &updates) {
           rcl_interfaces::msg::SetParametersResult result;
           result.successful = true;
           double distance = parameters_.target_distance_m;
+          double lateral = parameters_.target_lateral_m;
           for (const auto &parameter : updates) {
-            if (parameter.get_name() != "target_distance_m") continue;
+            const bool is_distance = parameter.get_name() == "target_distance_m";
+            if (!is_distance && parameter.get_name() != "target_lateral_m") continue;
             if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE ||
-                !std::isfinite(parameter.as_double()) || parameter.as_double() <= 0) {
+                !std::isfinite(parameter.as_double()) || (is_distance && parameter.as_double() <= 0)) {
               result.successful = false;
-              result.reason = "target_distance_m must be a positive finite double";
+              result.reason = "target coordinates must be finite doubles; target_distance_m must be positive";
               return result;
             }
-            distance = parameter.as_double();
+            if (is_distance) distance = parameter.as_double();
+            else lateral = parameter.as_double();
           }
-          if (distance != parameters_.target_distance_m) {
+          if (distance != parameters_.target_distance_m || lateral != parameters_.target_lateral_m) {
             parameters_.target_distance_m = distance;
-            controller_.set_target_distance(distance);
+            parameters_.target_lateral_m = lateral;
+            controller_.set_target(distance, lateral);
           }
           return result;
         });
@@ -108,6 +116,7 @@ class ControlNode : public rclcpp::Node {
     // YAML/命令行覆盖默认值；控制参数的集中校验交给 Controller 构造函数。
     ControlParameters p;
     p.target_distance_m = declare_parameter("target_distance_m", p.target_distance_m);
+    p.target_lateral_m = declare_parameter("target_lateral_m", p.target_lateral_m);
     p.lateral_gain = startup_parameter("lateral_gain", p.lateral_gain);
     p.forward_gain = startup_parameter("forward_gain", p.forward_gain);
     p.lateral_tolerance_m = startup_parameter("lateral_tolerance_m", p.lateral_tolerance_m);
@@ -132,6 +141,12 @@ class ControlNode : public rclcpp::Node {
     const vision_msgs::msg::Detection3D *selected = nullptr;
     double best = std::numeric_limits<double>::infinity();
     for (const auto &detection : message.detections) {
+      // 即使上游同时发布两种规格，也只锁定所选规格；锁定后同样检查。
+      const auto &size = detection.bbox.size;
+      if (!std::isfinite(size.x) || !std::isfinite(size.y) || !std::isfinite(size.z) ||
+          std::abs(size.x - target_size_m_) > 0.01 ||
+          std::abs(size.y - target_size_m_) > 0.01 ||
+          std::abs(size.z - target_size_m_) > 0.01) continue;
       const auto &p = detection.bbox.center.position;
       const auto &q = detection.bbox.center.orientation;
       const double quaternion_norm = q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w;
@@ -303,15 +318,16 @@ class ControlNode : public rclcpp::Node {
     velocity_pub_->publish(output);
     const double missing = std::numeric_limits<double>::quiet_NaN();
     // 丢失时位置显示 nan，避免把上一帧位置误看成当前观测；速度仍明确为零。
-    const double x = valid_pose_ ? center_.x() : missing;
-    const double z = valid_pose_ ? center_.z() : missing;
+    Eigen::Vector2d horizontal(missing, missing);
+    if (valid_pose_) project_to_horizontal(center_, up_, horizontal);
+    const double x = horizontal.x(), y = horizontal.y();
     // cmd_* 是本周期计算指令；wire_* 是截断到 mm/s 后的编码值，并非实测车速。
     // serial=sent/failed 表示该次写入结果；dry_run 始终显示 not_opened。
     RCLCPP_INFO(get_logger(),
-        "mode=%s state=%s id=%s X=%.3f Z=%.3f ex=%.3f ez=%.3f "
+        "mode=%s size=%s state=%s id=%s plane_x=%.3f plane_y=%.3f ex=%.3f ey=%.3f "
         "cmd_vx=%+.4f cmd_vy=%+.4f vw=0.000 wire_vx=%+.3f wire_vy=%+.3f serial=%s",
-        dry_run_ ? "dry_run" : "serial", state_.c_str(), target_id_.empty() ? "-" : target_id_.c_str(),
-        x, z, x, z - parameters_.target_distance_m, vx, vy,
+        dry_run_ ? "dry_run" : "serial", size_.c_str(), state_.c_str(), target_id_.empty() ? "-" : target_id_.c_str(),
+        x, y, x - parameters_.target_distance_m, y - parameters_.target_lateral_m, vx, vy,
         std::trunc(vx * 1000) / 1000, std::trunc(vy * 1000) / 1000, send_status);
   }
 
@@ -333,6 +349,8 @@ class ControlNode : public rclcpp::Node {
   // enabled_ 表示本轮启用；valid_pose_ 表示当前可计算；fault_ 表示串口故障锁止。
   bool dry_run_ = true, enabled_ = false, valid_pose_ = false, fault_ = false;
   double timeout_ = 0.5;
+  double target_size_m_ = 0.35;
+  std::string size_;
   int baudrate_ = 961200;
   std::string target_id_, frame_id_, serial_path_, state_ = "disabled";
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr velocity_pub_;

@@ -23,7 +23,7 @@ std::runtime_error io_error(const std::string & operation)
 
 void write_speed(VelocityFrame & frame, std::size_t offset, double speed)
 {
-  // 旧协议用有符号 int16 表示 mm/s，小端序；转换时向零截断。
+  // 线速度用有符号 int16 表示 mm/s，小端序；转换时向零截断。
   const auto value = static_cast<std::int16_t>(std::clamp(speed, -0.30, 0.30) * 1000.0);
   const auto bits = static_cast<std::uint16_t>(value);
   frame[offset] = static_cast<std::uint8_t>(bits & 0xff);
@@ -38,18 +38,18 @@ VelocityFrame encode_velocity(double vx, double vy)
   frame[0] = 0xa5;
   write_speed(frame, 1, vx);
   write_speed(frame, 3, vy);
-  // 第 5～6 字节角速度、第 7～9 字节标志均保持为零。
+  // 下标 5～6 为角速度 int(vw*10)，下标 7 为单字节 mode，均保持为零。
   // 以下字节位置从 0 开始：CRC8 初值为 0、多项式为 0x07，
-  // 仅覆盖下标 1～9，不包含帧头 A5、CRC 字节和帧尾 FF。
+  // 仅覆盖下标 1～7，不包含帧头 A5、CRC 字节和帧尾 FF。
   std::uint8_t crc = 0;
-  for (std::size_t i = 1; i <= 9; ++i) {
+  for (std::size_t i = 1; i <= 7; ++i) {
     crc ^= frame[i];
     for (int bit = 0; bit < 8; ++bit) {
       crc = static_cast<std::uint8_t>((crc & 0x80) ? (crc << 1) ^ 0x07 : crc << 1);
     }
   }
-  frame[10] = crc;
-  frame[11] = 0xff;
+  frame[8] = crc;
+  frame[9] = 0xff;
   return frame;
 }
 

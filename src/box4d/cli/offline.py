@@ -23,6 +23,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("dataset", type=Path)
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--size", choices=("big", "small"), help="recognize and track only big (0.35 m) or small (0.20 m) cubes")
     p.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[2] / "config/box4d_cpu.json")
     p.add_argument("--method", choices=("depth", "pnp", "hybrid"))
     p.add_argument("--plane-backend", choices=("numpy", "pcl"))
@@ -64,6 +65,7 @@ def main():
     scenes = {int(row["stamp_ns"]): row.get("scene", "") for row in truth_rows or []}
     cfg = Config.load(
         args.config,
+        size=args.size,
         method=args.method,
         plane_backend=args.plane_backend,
         geometry_backend=args.geometry_backend,

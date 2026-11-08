@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 import pty
 import signal
-import struct
 import subprocess
 import tempfile
 import time
@@ -37,6 +36,7 @@ class Harness:
             "-p", "up_topic:=/box_control_test/up",
             "-r", "/box_pose_control/cmd_vel:=/box_control_test/velocity",
             "-p", "serial_port:=/does-not-exist-dry-run-must-not-open",
+            "-p", "size:=small",
             *extra,
         ], stdout=self.log_file, stderr=subprocess.STDOUT)
         self.commands = []
@@ -59,7 +59,7 @@ class Harness:
             rclpy.spin_once(self.node, timeout_sec=min(0.02, max(0.0, end - time.monotonic())))
 
     def publish(self, boxes=(("run:a", 0.0, 0.0, 0.6),), *, up=(0.0, -1.0, 0.0),
-                frame="camera_color_optical_frame", stamp=None, up_frame=None, up_first=False):
+                frame="camera_color_optical_frame", stamp=None, up_frame=None, up_first=False, sizes=None):
         message = Detection3DArray()
         message.header.frame_id = frame
         message.header.stamp = self.node.get_clock().now().to_msg() if stamp is None else stamp
@@ -71,7 +71,8 @@ class Harness:
             detection.bbox.center.position.y = float(y)
             detection.bbox.center.position.z = float(z)
             detection.bbox.center.orientation.w = 1.0
-            detection.bbox.size.x = detection.bbox.size.y = detection.bbox.size.z = 0.2
+            edge = (sizes or {}).get(identity, 0.2)
+            detection.bbox.size.x = detection.bbox.size.y = detection.bbox.size.z = edge
             message.detections.append(detection)
         vector = Vector3Stamped()
         vector.header.stamp = message.header.stamp
@@ -104,8 +105,8 @@ class Harness:
         response = self.call(self.enabled, SetBool.Request(data=enabled))
         assert response.success, response.message
 
-    def distance(self, value):
-        request = SetParameters.Request(parameters=[Parameter(name="target_distance_m",
+    def distance(self, value, name="target_distance_m"):
+        request = SetParameters.Request(parameters=[Parameter(name=name,
             value=ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=value))])
         return self.call(self.parameters, request).results[0]
 
@@ -201,9 +202,10 @@ def test_pairing_tilt_and_invalid_inputs(harness):
     h = harness
     h.stream(up=None)
     assert stopped(last(h))
-    # 向下俯仰 60°，z 差 0.04m 应产生 vx=0.08m/s；Y 不参与误差。
+    # 向下俯仰 60°：构造水平前方 0.38m、高度 0.1m 的方块，期望 vx=0.08。
     tilted_up = (0.0, -0.5, -math.sqrt(3.0) / 2.0)
-    h.stream(boxes=(("run:a", 0.0, 0.2, 0.34),), up=tilted_up, up_first=True)
+    h.stream(boxes=(("run:a", 0.0, -0.38 * math.sqrt(3.0) / 2.0 - 0.05,
+                     0.19 - 0.1 * math.sqrt(3.0) / 2.0),), up=tilted_up, up_first=True)
     assert last(h).linear.x == pytest.approx(0.08, abs=1e-6)
     h.stream(up=(0.0, 0.0, 1.0))
     assert stopped(last(h))
@@ -259,13 +261,40 @@ def test_serial_mode_sends_twist_protocol_and_stop_on_exit():
                 data.extend(os.read(master, 4096))
             except BlockingIOError:
                 break
-        assert len(data) % 12 == 0
-        frames = [data[i:i + 12] for i in range(0, len(data), 12)]
-        assert any(struct.unpack_from("<h", frame, 1)[0] == 100 for frame in frames)
-        assert frames[-1] == bytes([0xA5] + [0] * 10 + [0xFF])
+        assert data and len(data) % 10 == 0
+        frames = [data[i:i + 10] for i in range(0, len(data), 10)]
+        # 电控 Python 参考协议的完整帧，验证非零速度 CRC 和退出停车帧。
+        moving_frame = bytes.fromhex("a5 64 00 00 00 00 00 00 91 ff")
+        stop_frame = bytes.fromhex("a5 00 00 00 00 00 00 00 00 ff")
+        assert moving_frame in frames
+        assert all(frame in (moving_frame, stop_frame) for frame in frames)
+        assert frames[-1] == stop_frame
         assert "serial=sent" in h.logs()
         assert h.process.returncode == 0
     finally:
         h.close()
         os.close(slave)
         os.close(master)
+
+
+@pytest.mark.parametrize("size,edge,other", [("big", 0.35, 0.2), ("small", 0.2, 0.35)])
+def test_selected_size_filters_before_lock_and_after_lock(size, edge, other):
+    h = Harness(["-p", f"size:={size}"])
+    try:
+        boxes = (("wrong", 0.0, 0.0, 0.6), ("chosen", 0.04, 0.0, 0.6))
+        h.stream(boxes=boxes, sizes={"wrong": other, "chosen": edge})
+        assert last(h).linear.y < 0
+        assert "id=chosen" in h.logs()
+        assert f"size={size}" in h.logs()
+        h.stream(boxes=(("chosen", 0.0, 0.0, 0.6),), sizes={"chosen": other}, up=None)
+        assert stopped(last(h)), "同 ID 改成另一种尺寸也必须停车"
+        h.stream(boxes=(("wrong", 0.0, 0.0, 0.6),), sizes={"wrong": edge})
+        assert stopped(last(h)), "不能自动换成其他同尺寸目标"
+        h.stream(boxes=(("chosen", 0.0, 0.0, 0.6),), sizes={"chosen": edge})
+        assert last(h).linear.x > 0
+        assert h.distance(0.08, "target_lateral_m").successful
+        h.stream(boxes=(("chosen", -0.08, 0.4, 0.30),), sizes={"chosen": edge})
+        assert stopped(last(h))
+        assert not h.distance(float("nan"), "target_lateral_m").successful
+    finally:
+        h.close()
