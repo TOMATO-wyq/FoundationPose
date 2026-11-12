@@ -13,10 +13,11 @@ from box4d.joint_tracking import _JointObjective, solve_joint
 from box4d.synthetic import default_camera
 
 
-def make_case(noise=False):
+def make_case(noise=False, translation=(0., 0., 0.)):
     camera = default_camera()
     initial = np.r_[.01, -.02, .005, .005, -.01, 1.1]
     truth = np.r_[.08, -.11, .04, .025, -.02, 1.14]
+    truth[3:] += translation
     pose = np.eye(4)
     pose[:3, :3] = cv2.Rodrigues(initial[:3])[0]
     pose[:3, 3] = initial[3:]
@@ -137,6 +138,15 @@ class JointObjectiveTests(unittest.TestCase):
         self.assertLess(np.linalg.norm(tv.ravel() - truth[3:]), .0015)
         angle_error = cv2.Rodrigues(cv2.Rodrigues(rv)[0].T @ cv2.Rodrigues(truth[:3])[0])[0]
         self.assertLess(np.rad2deg(np.linalg.norm(angle_error)), .6)
+
+    def test_joint_translation_is_not_bounded_by_id_association_radius(self):
+        frame, state, model, uv, depth, plane, _, truth = make_case(translation=(.30, 0., 0.))
+        rv, tv, report = solve_joint(
+            frame, state, model, uv, depth, plane, Config(track_max_distance_m=.01)
+        )
+        self.assertGreater(tv[0, 0] - state["pose"][0, 3], .30)
+        self.assertLess(np.linalg.norm(tv.ravel() - truth[3:]), .002)
+        self.assertLess(report["final_cost"], report["initial_cost"] * .01)
 
     def test_empty_depth_and_mismatched_correspondences_are_explicit_errors(self):
         frame, state, model, uv, depth, plane, _, _ = make_case()

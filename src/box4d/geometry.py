@@ -167,12 +167,45 @@ def ray_plane(camera, uv, plane):
     return rays * z[:, None]
 
 
+def plane_limits(points, cfg):
+    """Bounded stereo depth uncertainty, referenced to one metre.
+
+    Keep the near-field floor; distance must never relax the metric size,
+    pose reprojection or median depth residual checks.
+    """
+    threshold, rmse = cfg.plane_threshold_m, cfg.plane_max_rmse_m
+    if cfg.plane_distance_noise and len(points):
+        scale = max(1.0, float(np.median(np.asarray(points)[:, 2])) ** 2)
+        threshold = max(threshold, min(cfg.plane_noise_cap_m, threshold * scale))
+        rmse = max(rmse, min(cfg.plane_noise_cap_m * 2 / 3, rmse * scale))
+    return threshold, rmse
+
+
 def fit_plane_configured(points, cfg):
     if cfg.plane_backend == "pcl":
         from .pcl_backend import fit_plane as pcl_fit_plane
 
-        return pcl_fit_plane(points, cfg)
-    return fit_plane(points, cfg.plane_threshold_m, cfg.min_depth_samples, backend=cfg.geometry_backend)
+        from dataclasses import replace
+
+        return pcl_fit_plane(points, replace(cfg, plane_threshold_m=plane_limits(points, cfg)[0]))
+    return fit_plane(points, plane_limits(points, cfg)[0], cfg.min_depth_samples, backend=cfg.geometry_backend)
+
+
+def plane_spatial_support(points, plane, threshold):
+    """Fraction of populated image cells supported by the measured plane.
+
+    A good global inlier ratio alone can hide a different depth on one side.
+    Empty/undersampled cells contribute no fabricated evidence.
+    """
+    uv = np.asarray(points)[:, :2] / np.asarray(points)[:, 2, None]
+    span = np.maximum(np.ptp(uv, axis=0), 1e-9)
+    cells = np.minimum(3, ((uv - uv.min(axis=0)) / span * 4).astype(int))
+    ids = cells[:, 0] + 4 * cells[:, 1]
+    counts = np.bincount(ids, minlength=16)
+    inliers = np.abs(points @ plane.normal + plane.d) < threshold
+    supported = np.bincount(ids, weights=inliers, minlength=16)
+    occupied = counts >= 3
+    return float(np.mean(supported[occupied] >= counts[occupied] * 0.5)) if occupied.any() else 0.0
 
 
 def order_quad(points, *, backend="auto"):

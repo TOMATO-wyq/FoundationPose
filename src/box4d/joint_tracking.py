@@ -10,6 +10,8 @@ import cv2
 import numpy as np
 from scipy.optimize import least_squares
 
+from .geometry import ray_plane
+
 
 class _JointObjective:
     """Balanced robust group means, with an analytic six-parameter Jacobian."""
@@ -100,8 +102,9 @@ class _JointObjective:
 def solve_joint(frame, state, model, uv, samples, plane, cfg):
     """Return a fallback proposal and diagnostics; caller validates its geometry.
 
-    The previous pose supplies only the initial value and existing search
-    bounds. No history residual or display smoothing is applied here. Every
+    The previous pose supplies the initial rotation and rotation search bounds.
+    Translation follows current RGB-D without a fixed travel bound.
+    No history residual or display smoothing is applied here. Every
     supplied current-plane inlier participates in the objective.
     """
     objective = _JointObjective(frame.camera, state, model, uv, samples, plane)
@@ -109,7 +112,12 @@ def solve_joint(frame, state, model, uv, samples, plane, cfg):
     if pose.shape != (4, 4) or not np.isfinite(pose).all():
         raise ValueError("joint initial pose must be a finite 4x4 transform")
     start = np.r_[cv2.Rodrigues(pose[:3, :3])[0].ravel(), pose[:3, 3]]
-    bounds = np.r_[np.full(3, 0.35), np.full(3, cfg.track_max_distance_m)]
+    # Re-anchor translation to current feature rays and the current measured
+    # plane before optimization. Removing the old travel box must not leave a
+    # fast-moving target far outside the solver's short iteration budget.
+    current_points = ray_plane(frame.camera, objective.uv, plane)
+    start[3:] = np.median(current_points - objective.model @ pose[:3, :3].T, axis=0)
+    bounds = np.r_[np.full(3, 0.35), np.full(3, np.inf)]
     initial_image_cost, initial_depth_cost = objective.costs(start)
     fit = least_squares(
         objective.residual,
@@ -125,6 +133,7 @@ def solve_joint(frame, state, model, uv, samples, plane, cfg):
     image_cost, depth_cost = objective.costs(fit.x)
     report = dict(
         objective="group_mean_standardized_soft_l1",
+        translation_initialization="current_feature_plane_intersections",
         image_points=objective.image_count,
         depth_points=objective.depth_count,
         image_sigma_px=objective.image_sigma_px,

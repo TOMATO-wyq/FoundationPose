@@ -6,7 +6,7 @@ import time
 import cv2
 import numpy as np
 
-from .geometry import fit_plane, order_quad, ray_plane
+from .geometry import fit_plane, order_quad, ray_plane, plane_limits
 from .edges import rgb_depth_edges
 from .native import geometry_kernel
 
@@ -21,10 +21,53 @@ class Face:
     plane_hint: object = None
 
 
-def sample_face(frame, quad, cfg, diagnostics=None):
+def check_horizontal_boundary(frame, quad, plane, cfg):
+    """A painted patch on a continuing floor is not an observed cube top.
+
+    Probe 3 cm beyond each measured edge in the face plane. Only positive
+    current-depth evidence counts; holes and image cuts are not boundaries.
+    Three continuing sides reject a floor patch while allowing touching tops.
+    """
+    if cfg.up_camera is None or abs(plane.normal @ np.asarray(cfg.up_camera)) < np.cos(
+        np.deg2rad(cfg.max_upright_tilt_deg)
+    ):
+        return None
+    corners = ray_plane(frame.camera, quad, plane)
+    center = corners.mean(axis=0)
+    fractions = np.linspace(.18, .82, 11)[:, None]
+    probes = []
+    for a, b in zip(corners, np.roll(corners, -1, axis=0)):
+        tangent = (b - a) / np.linalg.norm(b - a)
+        outward = (a + b) / 2 - center
+        outward -= tangent * (outward @ tangent)
+        outward /= np.linalg.norm(outward)
+        probes.append(a + fractions * (b - a) + .03 * outward)
+    points = np.concatenate(probes)
+    projected = frame.camera.project(points)
+    inside = (np.isfinite(projected).all(axis=1) & (points[:, 2] > 0)
+              & (projected[:, 0] >= 0) & (projected[:, 0] < frame.camera.width)
+              & (projected[:, 1] >= 0) & (projected[:, 1] < frame.camera.height))
+    ids = np.flatnonzero(inside)
+    ij = np.floor(projected[ids] + .5).astype(int)
+    ij[:, 0] = np.clip(ij[:, 0], 0, frame.camera.width - 1)
+    ij[:, 1] = np.clip(ij[:, 1], 0, frame.camera.height - 1)
+    z = frame.depth[ij[:, 1], ij[:, 0]]
+    valid = np.isfinite(z) & (z >= cfg.min_depth_m) & (z <= cfg.max_depth_m)
+    measured = frame.camera.rays(ij[valid]) * z[valid, None]
+    on = np.zeros(len(points), bool)
+    threshold = plane_limits(corners, cfg)[0] * 1.5
+    on[ids[valid]] = np.abs(measured @ plane.normal + plane.d) < threshold
+    fractions = on.reshape(4, -1).mean(axis=1)
+    return dict(coplanar_exterior_fraction_per_edge=fractions.tolist(),
+                continuing_edges=int(np.count_nonzero(fractions >= .7)),
+                exterior_probe_distance_m=.03)
+
+
+def sample_face(frame, quad, cfg, diagnostics=None, *, allow_clipped=False):
     """Sample interior depth, never directly reading noisy silhouette corners."""
     h, w = frame.depth.shape
-    if np.any(quad < 1) or np.any(quad[:, 0] > w - 2) or np.any(quad[:, 1] > h - 2):
+    clipped = np.any(quad < 1) or np.any(quad[:, 0] > w - 2) or np.any(quad[:, 1] > h - 2)
+    if clipped and not allow_clipped:
         raise ValueError("face boundary clipped by image; complete center pose unobservable")
     if cfg.roi_xyxy is not None:
         x0, y0, x1, y1 = cfg.roi_xyxy
@@ -155,6 +198,27 @@ class Detector:
             self._grid_cache = key, uv, camera.rays(uv)
         return self._grid_cache[1:]
 
+    def _color_regions(self, hsv):
+        """Per-paint external outlines; logo holes are proposal pixels only."""
+        from .appearance import classify_hsv
+
+        labels = classify_hsv(hsv, self.cfg)
+        regions = []
+        for label in (1, -1):
+            mask = (labels == label).astype(np.uint8) * 255
+            if self.cfg.roi_xyxy is not None:
+                x0, y0, x1, y1 = self.cfg.roi_xyxy
+                restricted = np.zeros_like(mask)
+                restricted[y0:y1, x0:x1] = mask[y0:y1, x0:x1]
+                mask = restricted
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+            contours = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
+            filled = np.zeros_like(mask)
+            contours = [c for c in contours if cv2.contourArea(c) >= self.cfg.min_face_area_px]
+            cv2.drawContours(filled, contours, -1, 255, cv2.FILLED)
+            regions.append(filled)
+        return regions
+
     def _depth_masks(self, frame, hsv=None, debug=None):
         """稀疏点 RANSAC 找模型，再用稠密点到平面的距离提取连通面片。
 
@@ -171,12 +235,14 @@ class Detector:
         good = np.isfinite(z) & (z >= cfg.min_depth_m) & (z <= cfg.max_depth_m)
         uv, xyz = uv[good], rays[good] * z[good, None]
         priority = np.zeros(len(xyz), bool)
+        color_region = None
         if cfg.analyze_colors and cfg.color_plane_priority:
             from .appearance import classify_hsv
 
             if hsv is None:
                 hsv = cv2.cvtColor(frame.rgb, cv2.COLOR_RGB2HSV)
             priority = classify_hsv(hsv[uv[:, 1], uv[:, 0]], cfg) != 0
+            color_region = np.maximum.reduce(self._color_regions(hsv))
         remaining = np.ones(len(xyz), bool)
         masks = []
         for attempt in range(cfg.max_scene_planes):
@@ -191,14 +257,16 @@ class Detector:
             if debug is not None:
                 debug.planes.append(report)
             try:
+                threshold, _ = plane_limits(p, cfg)
                 plane = fit_plane(
-                    p, cfg.plane_threshold_m, cfg.min_depth_samples, trials=24, backend=cfg.geometry_backend
+                    p, threshold, cfg.min_depth_samples, trials=24, backend=cfg.geometry_backend
                 )
             except ValueError as error:
                 report.update(status="fit_failed", reason=str(error))
                 break
-            report.update(normal=plane.normal.tolist(), d=plane.d, rmse_m=plane.rmse_m, support=plane.support)
-            selected = remaining & (np.abs(xyz @ plane.normal + plane.d) < cfg.plane_threshold_m)
+            report.update(normal=plane.normal.tolist(), d=plane.d, rmse_m=plane.rmse_m,
+                          support=plane.support, plane_threshold_m=threshold)
+            selected = remaining & (np.abs(xyz @ plane.normal + plane.d) < threshold)
             remaining[selected] = False
             if selected.sum() < cfg.min_depth_samples:
                 report["status"] = "too_few_inliers"
@@ -206,11 +274,6 @@ class Detector:
             bounded = selected & priority if prioritize else selected
             if bounded.sum() < cfg.min_depth_samples:
                 report["status"] = "too_few_colored_inliers"
-                continue
-            points = xyz[bounded]
-            # Large wall/floor planes cannot be one or two boxes of these sizes.
-            if np.linalg.norm(np.ptp(points, axis=0)) > max(cfg.sizes_m) * 3.2:
-                report["status"] = "extent_too_large"
                 continue
             # A target plane intersects the floor/wall in a narrow strip. Do
             # not let unrelated coplanar background pixels expand its bounds.
@@ -239,7 +302,7 @@ class Detector:
                     plane.d,
                     cfg.min_depth_m,
                     cfg.max_depth_m,
-                    cfg.plane_threshold_m,
+                    threshold,
                 )
             else:
                 depth = local_depth.ravel()
@@ -247,18 +310,41 @@ class Detector:
                 residual = np.full(len(depth), np.inf)
                 local_points = local_rays.reshape(-1, 3)[valid] * depth[valid, None]
                 residual[valid] = np.abs(np.einsum("ni,i->n", local_points, plane.normal) + plane.d)
-                mask = (residual.reshape(local_depth.shape) < cfg.plane_threshold_m).astype(np.uint8) * 255
+                mask = (residual.reshape(local_depth.shape) < threshold).astype(np.uint8) * 255
             report["dense_inlier_pixels"] = int(np.count_nonzero(mask))
-            chroma = cv2.cvtColor(frame.rgb[y0:y1, x0:x1], cv2.COLOR_RGB2HSV)[:, :, 1] > 55
-            if np.count_nonzero((mask > 0) & chroma) > np.count_nonzero(mask) * 0.6:
-                mask[~chroma] = 0
+            if prioritize and color_region is not None:
+                mask &= color_region[y0:y1, x0:x1]
+            else:
+                local_hsv = hsv[y0:y1, x0:x1] if hsv is not None else cv2.cvtColor(
+                    frame.rgb[y0:y1, x0:x1], cv2.COLOR_RGB2HSV
+                )
+                chroma = local_hsv[:, :, 1] > 55
+                if np.count_nonzero((mask > 0) & chroma) > np.count_nonzero(mask) * 0.6:
+                    contours = cv2.findContours(chroma.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2]
+                    outline = np.zeros_like(mask)
+                    cv2.drawContours(outline, contours, -1, 255, cv2.FILLED)
+                    mask &= outline
             # Remove thin wall/floor intersection bands before fitting a face outline.
-            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((7, 7), np.uint8))
+            opening = 3 if prioritize else 7
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((opening, opening), np.uint8))
             mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
             # Keep separate connected patches instead of taking one convex hull across gaps.
             count, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
             for label in range(1, count):
                 if stats[label, cv2.CC_STAT_AREA] < cfg.min_face_area_px:
+                    continue
+                # Check each connected patch, not the extent of unrelated
+                # coplanar targets/background across the entire image.
+                ys, xs = np.nonzero(labels == label)
+                stride = max(1, len(xs) // cfg.max_depth_samples)
+                patch = local_rays[ys[::stride], xs[::stride]] * local_depth[ys[::stride], xs[::stride], None]
+                valid_patch = (
+                    np.isfinite(patch).all(axis=1)
+                    & (patch[:, 2] >= cfg.min_depth_m) & (patch[:, 2] <= cfg.max_depth_m)
+                )
+                patch = patch[valid_patch]
+                patch = patch[np.abs(patch @ plane.normal + plane.d) < threshold]
+                if not len(patch) or np.linalg.norm(np.ptp(patch, axis=0)) > max(cfg.sizes_m) * 3.2:
                     continue
                 component = np.zeros(frame.depth.shape, np.uint8)
                 component[y0:y1, x0:x1] = (labels == label).astype(np.uint8) * 255
@@ -452,6 +538,8 @@ class Detector:
         if cfg.roi_xyxy is not None:
             saturation &= roi
         masks.append((saturation, "color_region"))
+        if cfg.analyze_colors:
+            masks.extend((mask, "paint_outline") for mask in self._color_regions(hsv))
         if debug is not None:
             debug.images["saturation"] = saturation.copy()
         plane_quads = []
@@ -478,7 +566,8 @@ class Detector:
                 )
             )
         for mask, source in masks:
-            contours = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[-2]
+            mode = cv2.RETR_EXTERNAL if source == "paint_outline" else cv2.RETR_LIST
+            contours = cv2.findContours(mask, mode, cv2.CHAIN_APPROX_SIMPLE)[-2]
             for contour in contours:
                 if cv2.contourArea(contour) < cfg.min_face_area_px:
                     continue
@@ -494,18 +583,32 @@ class Detector:
                     lengths = np.linalg.norm(q - np.roll(q, 1, axis=0), axis=1)
                     if lengths.min() < cfg.min_edge_px or lengths.max() / lengths.min() > 8:
                         break
-                    if any(np.linalg.norm(q - f.quad, axis=1).mean() < 5 for f in faces):
+                    if any(
+                        np.linalg.norm(q - f.quad, axis=1).mean() < 5 for f in faces
+                        if source != "paint_outline" or f.source == source
+                    ):
                         break
-                    q = _refine_quad(q, edges, backend=cfg.geometry_backend)
+                    if source == "paint_outline":
+                        from .roi_faces import fit_boundary_lines
+
+                        fitted = fit_boundary_lines(q, rgb_edges, cfg)
+                        q = fitted[0] if fitted is not None else q
+                    else:
+                        q = _refine_quad(q, edges, backend=cfg.geometry_backend)
                     support, per_edge = _edge_support(q, distance, backend=cfg.geometry_backend)
                     if support < cfg.min_edge_support and source != "depth_plane":
                         break
-                    if any(np.linalg.norm(q - f.quad, axis=1).mean() < 5 for f in faces):
+                    if any(
+                        np.linalg.norm(q - f.quad, axis=1).mean() < 5 for f in faces
+                        if source != "paint_outline" or f.source == source
+                    ):
                         break
                     faces.append(Face(q, source, support, evidence=dict(edge_support_per_side=per_edge)))
                     break
         # Strong observed boundaries first; preserve a bounded number of hypotheses.
-        faces.sort(key=lambda f: (f.edge_support, cv2.contourArea(f.quad.astype(np.float32))), reverse=True)
+        faces.sort(key=lambda f: (
+            f.source == "paint_outline", f.edge_support, cv2.contourArea(f.quad.astype(np.float32))
+        ), reverse=True)
         faces = faces[: cfg.max_faces]
         # Reuse the measured patches; do not run a second scene-plane RANSAC.
         if cfg.upright_outline_proposals and cfg.up_camera is not None:

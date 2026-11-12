@@ -4,6 +4,7 @@ from copy import deepcopy
 
 from .geometry import upright_from_camera
 from .native import geometry_backend
+from .camera_motion import motion_context
 
 
 TIMING_COMPONENTS = ("detector_ms", "solve_ms", "refinement_ms", "appearance_ms", "proposal_count")
@@ -21,6 +22,7 @@ def frame_metadata(frame, cfg, up=None):
         geometry_backend=geometry_backend(cfg.geometry_backend),
         up_camera=cfg.up_camera,
         U_from_camera=None if up is None else up.tolist(),
+        camera_motion=motion_context(frame, cfg),
     )
 
 

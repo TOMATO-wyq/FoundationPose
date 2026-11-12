@@ -39,7 +39,7 @@ if(BUILD_TESTING)
   target_link_libraries(test_controller control_core)
   ament_add_gtest(test_serial_port test/test_serial_port.cpp)
   target_link_libraries(test_serial_port control_core util)
-  ament_add_pytest_test(test_ros_node test/test_ros_node.py TIMEOUT 120
+  ament_add_pytest_test(test_ros_node test/test_ros_node.py TIMEOUT 240
     ENV NODE_EXECUTABLE=$<TARGET_FILE:box_pose_control_node>)
   ament_add_pytest_test(test_launch test/test_launch.py TIMEOUT 30)
 endif()

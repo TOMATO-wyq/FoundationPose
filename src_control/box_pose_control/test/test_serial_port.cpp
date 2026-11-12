@@ -3,9 +3,11 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
+#include <fcntl.h>
 #include <poll.h>
 #include <pty.h>
 #include <unistd.h>
@@ -27,11 +29,17 @@ TEST(VelocityFrameTest, MatchesPythonReferenceWireFormatAndCrc)
 TEST(VelocityFrameTest, ClampsBothSpeedsAtHardwareLimit)
 {
   const auto frame = encode_velocity(2.0, -3.0);
-  EXPECT_EQ(frame[1], 0x2c);
+  EXPECT_EQ(frame[1], 0xf4);
   EXPECT_EQ(frame[2], 0x01);
-  EXPECT_EQ(frame[3], 0xd4);
+  EXPECT_EQ(frame[3], 0x0c);
   EXPECT_EQ(frame[4], 0xfe);
-  EXPECT_EQ(frame, encode_velocity(0.30, -0.30));
+  EXPECT_EQ(frame, encode_velocity(0.50, -0.50));
+  // 高于旧上限的速度必须原样编码，不能仍被截断到 300 mm/s。
+  const auto faster = encode_velocity(0.4, -0.4);
+  EXPECT_EQ(faster[1], 0x90);
+  EXPECT_EQ(faster[2], 0x01);
+  EXPECT_EQ(faster[3], 0x70);
+  EXPECT_EQ(faster[4], 0xfe);
 }
 
 TEST(VelocityFrameTest, EncodesZeroSpeedWithZeroAngularVelocityAndMode)
@@ -40,6 +48,16 @@ TEST(VelocityFrameTest, EncodesZeroSpeedWithZeroAngularVelocityAndMode)
     0xa5, 0, 0, 0, 0, 0, 0, 0, 0, 0xff};
   EXPECT_EQ(encode_velocity(0.0, 0.0), expected);
   EXPECT_EQ(encode_velocity(0.0009, -0.0009), expected);
+}
+
+TEST(VelocityFrameTest, EncodesSignedGripModesAndIncludesThemInCrc)
+{
+  const VelocityFrame grip{
+    0xa5, 0, 0, 0, 0, 0, 0, 0x01, 0x07, 0xff};
+  const VelocityFrame reset{
+    0xa5, 0, 0, 0, 0, 0, 0, 0xff, 0xf3, 0xff};
+  EXPECT_EQ(encode_velocity(0.0, 0.0, 1), grip);
+  EXPECT_EQ(encode_velocity(0.0, 0.0, -1), reset);
 }
 
 class SerialPortTest : public ::testing::Test {
@@ -98,6 +116,43 @@ TEST_F(SerialPortTest, SendsFrameAtNonstandardBaudAndStopsOnClose)
   EXPECT_FALSE(serial.is_open());
   EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0));
   EXPECT_NO_THROW(serial.close());
+}
+
+TEST_F(SerialPortTest, StandardBaudUsesNativeTermiosEncodingAndRaw8N1)
+{
+  SerialPort serial;
+  serial.open(path_, 115200);
+  const int observer = ::open(path_.c_str(), O_RDONLY | O_NOCTTY);
+  ASSERT_GE(observer, 0);
+  termios settings{};
+  const int result = ::tcgetattr(observer, &settings);
+  ::close(observer);
+  ASSERT_EQ(result, 0);
+  EXPECT_EQ(::cfgetispeed(&settings), B115200);
+  EXPECT_EQ(::cfgetospeed(&settings), B115200);
+  EXPECT_EQ(settings.c_cflag & CSIZE, CS8);
+  EXPECT_EQ(settings.c_cflag & (CSTOPB | PARENB | CMSPAR | CRTSCTS), 0u);
+  EXPECT_EQ(settings.c_iflag, 0u);
+  EXPECT_EQ(settings.c_oflag, 0u);
+  EXPECT_EQ(settings.c_lflag, 0u);
+  serial.send(0.1, -0.02);
+  EXPECT_EQ(read_frame(), encode_velocity(0.1, -0.02));
+  serial.close();
+  EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0));
+}
+
+TEST_F(SerialPortTest, SendsGripModesAndDefaultsToZeroAfterwards)
+{
+  SerialPort serial;
+  serial.open(path_, 115200);
+  serial.send(0.0, 0.0, 1);
+  EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0, 1));
+  serial.send(0.0, 0.0);
+  EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0));
+  serial.send(0.0, 0.0, -1);
+  EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0, -1));
+  serial.close();
+  EXPECT_EQ(read_frame(), encode_velocity(0.0, 0.0));
 }
 
 TEST_F(SerialPortTest, ExclusiveLockIsReleasedForReopening)
@@ -184,4 +239,19 @@ TEST(SerialPortStateTest, OpeningMissingDeviceAndSendingWhileClosedReportErrors)
 }
 
 }  // namespace
+}  // namespace box_pose_control
+
+namespace box_pose_control {
+TEST(VelocityFrameTest, EncodesSignedAngularSpeedAndCrc) {
+  // 与 Python struct.pack + CRC 独立核对，且保留 mode 的第三参数兼容性。
+  const auto positive = encode_velocity(.123, -.045, 1, .39);
+  EXPECT_EQ(positive[5], 3);
+  EXPECT_EQ(positive[6], 0);
+  const auto negative = encode_velocity(.123, -.045, -1, -.39);
+  EXPECT_EQ(negative[5], 0xfd);
+  EXPECT_EQ(negative[6], 0xff);
+  EXPECT_NE(positive[8], encode_velocity(.123, -.045, 1)[8]);
+  EXPECT_THROW(encode_velocity(0, 0, 0, std::numeric_limits<double>::quiet_NaN()),
+               std::invalid_argument);
+}
 }  // namespace box_pose_control

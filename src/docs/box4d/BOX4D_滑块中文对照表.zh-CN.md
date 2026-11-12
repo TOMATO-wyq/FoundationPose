@@ -139,7 +139,7 @@ PCL 参数仅在 `plane_backend: "pcl"` 时生效。`Plane dist` 同时影响场
 | Redetect ms | 正常跟踪期间的全图重检测间隔，毫秒 | 正常时更少全图搜索；目标丢失仍可立即触发检测 | `redetect_interval_s` |
 | Detect age ms | 可接受的后台检测结果最大年龄，毫秒 | 允许使用更早的检测来重新获取，但仍要通过当前图像／深度检查 | `detector_max_age_s` |
 | Track gap ms | 距上次成功跟踪允许的时间间隔，毫秒 | 容忍更久的短暂中断；不会直接发布旧帧位姿 | `track_max_gap_s` |
-| Track travel cm | 单次位姿更新允许的平移量，厘米 | 容忍更快移动，也更容易接受大跳变 | `track_max_distance_m` |
+| ID match cm | 目标 ID／速度历史的关联半径，厘米 | 更容易延续原 ID；不限制已通过当前图像／深度检查的位姿移动量 | `track_max_distance_m` |
 | Track min features | 最少可用跟踪点数 | 跟踪证据要求更高，少点时更容易判丢失 | `track_min_features` |
 | Seed max features | 初始化时最多选取的特征点数 | 有机会覆盖更多纹理，计算量增加；目前仍主要从一个可用面选点 | `track_seed_max_features` |
 | Reseed min points | 点数低于此值时尝试补点 | 更早触发补点，仍受补点间隔限制 | `track_min_reseed_features` |

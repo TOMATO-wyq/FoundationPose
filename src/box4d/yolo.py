@@ -117,7 +117,8 @@ class YoloGuidedPipeline:
             depth = frame.depth.copy()
             depth[~instance["mask"]] = 0
             selected = Frame(
-                frame.rgb, depth, frame.camera, frame.stamp_ns, frame.sequence, frame.received_monotonic_ns
+                frame.rgb, depth, frame.camera, frame.stamp_ns, frame.sequence, frame.received_monotonic_ns,
+                camera_motion=frame.camera_motion,
             )
         child, _ = pipeline.process(selected)
         self._ray_cache = pipeline.detector._ray_cache

@@ -39,6 +39,8 @@ def main():
     p.add_argument("--yolo-device")
     p.add_argument("--yolo-conf", type=float)
     p.add_argument("--no-tracking", action="store_true")
+    p.add_argument("--prediction-model", choices=("cv", "ca"))
+    p.add_argument("--no-camera-rotation", action="store_true")
     p.add_argument("--allow-partial", action="store_true")
     p.add_argument("--max-frames", type=int)
     p.add_argument("--save-debug", action="store_true")
@@ -74,6 +76,8 @@ def main():
         yolo_conf=args.yolo_conf,
         refine_4d=False if args.no_refine else None,
         tracking=False if args.no_tracking else None,
+        prediction_model=args.prediction_model,
+        camera_rotation_compensation=False if args.no_camera_rotation else None,
     )
     if args.no_tracking:
         cfg.temporal_recovery = False
@@ -84,6 +88,9 @@ def main():
     elif cfg.up_camera is None:
         cfg.up_camera = dataset.manifest.get("up_camera")
     cfg.validate()
+    camera_motion_report = dataset.enable_camera_motion(cfg)
+    if cfg.camera_rotation_compensation:
+        print(f"Camera rotation: {camera_motion_report}", flush=True)
     pipeline, tracker = make_pipeline(cfg, debug=args.save_stages), Tracker(cfg)
     writer = RunWriter(
         args.output,
@@ -92,6 +99,7 @@ def main():
             dataset=str(args.dataset),
             synthetic=dataset.manifest.get("synthetic", False),
             environment=environment(cfg),
+            camera_motion=camera_motion_report,
             video_playback_fps=args.video_fps if args.video else None,
             display_smoothed=args.display_smoothed,
             smoothing_alpha=cfg.smoothing_alpha,

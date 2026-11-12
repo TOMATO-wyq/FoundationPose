@@ -20,6 +20,7 @@ class Frame:
     stamp_ns: int
     sequence: int = 0
     received_monotonic_ns: int = 0
+    camera_motion: object = None
 
     def __post_init__(self):
         if self.rgb.dtype != np.uint8 or self.rgb.shape != (self.camera.height, self.camera.width, 3):
@@ -31,6 +32,13 @@ class Frame:
         self.stamp_ns, self.sequence = int(self.stamp_ns), int(self.sequence)
         self.rgb = np.ascontiguousarray(self.rgb)
         self.depth = np.ascontiguousarray(self.depth, dtype=np.float32)
+        if self.camera_motion is not None:
+            from .camera_motion import rotation_matrix
+            rotation_matrix(self.camera_motion["rotation_reference_from_camera"])
+            if (not isinstance(self.camera_motion["reference_id"], str)
+                    or not self.camera_motion["reference_id"]
+                    or self.camera_motion["stamp_ns"] != self.stamp_ns):
+                raise ValueError("camera motion reference and source stamp must match RGB-D")
 
 
 def json_value(value):
@@ -81,6 +89,8 @@ class DatasetWriter:
         name = f"frames/{self.count:06d}.npz"
         np.savez(self.path / name, rgb=frame.rgb, depth=frame.depth)
         row = dict(file=name, sequence=frame.sequence, stamp_ns=frame.stamp_ns)
+        if frame.camera_motion is not None:
+            row["camera_motion"] = frame.camera_motion
         self.index.write(json.dumps(row) + "\n")
         self.index.flush()
         self.count += 1
@@ -98,6 +108,7 @@ class DatasetWriter:
 class Dataset:
     def __init__(self, path, allow_partial=False):
         self.path = Path(path)
+        self.rotations = None
         if (self.path / "manifest.json").is_file():
             self.manifest = json.loads((self.path / "manifest.json").read_text())
             if self.manifest.get("format") != "box4d-rgbd" or self.manifest.get("version") != 1:
@@ -146,6 +157,25 @@ class Dataset:
     def __len__(self):
         return len(self.rows)
 
+    def enable_camera_motion(self, cfg):
+        """Use saved frame rotations or the native IMU sidecar, when available."""
+        if not cfg.camera_rotation_compensation:
+            return dict(enabled=False, reason="disabled_by_config")
+        if any(row.get("camera_motion") is not None for row in self.rows):
+            return dict(enabled=True, source="saved_frame_rotations")
+        if not (self.path / "imu_reference.json").is_file():
+            return dict(enabled=False, reason="no_gyro_sidecar")
+        from .camera_motion import recorded_rotations
+        try:
+            self.rotations = recorded_rotations(self.path, self.camera.frame_id, cfg)
+        except ImportError as error:
+            raise RuntimeError("Native IMU replay requires ROS: source /opt/ros/humble/setup.bash, "
+                               "or use --no-camera-rotation for RGB-D-only replay") from error
+        available = sum(self.rotations.at(int(row["stamp_ns"])) is not None for row in self.rows)
+        return dict(enabled=True, source="native_imu_sidecar", covered_frames=available,
+                    total_frames=len(self.rows), gyro_samples=len(self.rotations.rows),
+                    gyro_gaps=self.rotations.gaps, rejected_gyro_samples=self.rotations.rejected)
+
     def frame(self, index):
         row = self.rows[index]
         if self.legacy:
@@ -162,7 +192,10 @@ class Dataset:
             with np.load(path, allow_pickle=False) as archive:
                 rgb, depth = archive["rgb"].copy(), archive["depth"].copy()
             stamp, sequence = int(row["stamp_ns"]), int(row["sequence"])
-        return Frame(rgb, depth, self.camera, stamp, sequence)
+        motion = row.get("camera_motion")
+        if motion is None and self.rotations is not None:
+            motion = self.rotations.at(stamp)
+        return Frame(rgb, depth, self.camera, stamp, sequence, camera_motion=motion)
 
     def __iter__(self):
         return (self.frame(i) for i in range(len(self)))

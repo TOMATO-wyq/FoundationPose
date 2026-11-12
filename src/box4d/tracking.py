@@ -6,6 +6,7 @@ from scipy.optimize import linear_sum_assignment
 from .geometry import angle_difference
 from .diagnostics import has_current_rejections
 from .motion import PositionKalman
+from .camera_motion import relative_camera_rotation
 
 
 class Tracker:
@@ -22,19 +23,22 @@ class Tracker:
         self.tracks.clear()
         self.last_stamp = None
 
-    def _prediction(self, track, stamp):
+    def _prediction(self, track, stamp, camera_motion=None):
         motion = track.get("motion")
-        if self.cfg.motion_prediction and motion is not None and motion.can_predict(stamp):
-            return motion.predict(stamp)
+        if self.cfg.motion_prediction and motion is not None and motion.can_predict(stamp, camera_motion):
+            return motion.predict(stamp, camera_motion)
         return None
 
     @staticmethod
-    def _predicted_object(identity, track, prediction, stamp):
+    def _predicted_object(identity, track, prediction, stamp, camera_motion=None):
         # The last rotation is only an assumption; no old image/depth evidence is copied.
         if track["pose"] is None:
             return None
         mean, covariance = prediction
         pose = track["pose"].copy()
+        delta = relative_camera_rotation(track.get("camera_motion"), camera_motion)
+        if delta is not None:
+            pose[:3, :3] = delta @ pose[:3, :3]
         pose[:3, 3] = mean[:3]
         return dict(
             track_id=identity,
@@ -65,10 +69,11 @@ class Tracker:
             self.reference = reference
             self.frame_id = frame_id
         self.last_stamp = stamp
+        camera_motion = result.get("camera_motion") if self.cfg.camera_rotation_compensation else None
         predictions = {
             identity: prediction
             for identity, track in self.tracks.items()
-            if (prediction := self._prediction(track, stamp)) is not None
+            if (prediction := self._prediction(track, stamp, camera_motion)) is not None
         }
         old = {
             i: t for i, t in self.tracks.items()
@@ -80,6 +85,10 @@ class Tracker:
         for row, identity in enumerate(ids):
             track = old[identity]
             center = predictions[identity][0][:3] if identity in predictions else track["center"]
+            if identity not in predictions:
+                delta = relative_camera_rotation(track.get("camera_motion"), camera_motion)
+                if delta is not None:
+                    center = delta @ center
             for column, observation in enumerate(objects):
                 distance = np.linalg.norm(np.asarray(observation["center_camera_m"]) - center)
                 if observation["size_m"] != track["size"] or distance > self.cfg.track_max_distance_m:
@@ -129,11 +138,13 @@ class Tracker:
                 previous_motion = None if previous is None else previous.get("motion")
                 if (
                     previous_motion is None
+                    or not previous_motion.compatible(camera_motion)
+                    or previous_motion.model != self.cfg.prediction_model
                     or (stamp - previous_motion.stamp_ns) / 1e9 > self.cfg.prediction_max_gap_s
                 ):
-                    motion = PositionKalman(center, stamp, self.cfg)
+                    motion = PositionKalman(center, stamp, self.cfg, camera_motion)
                 else:
-                    motion = previous_motion.updated(center, stamp)
+                    motion = previous_motion.updated(center, stamp, camera_motion)
             pose = observation.get("T_camera_from_box")
             tracks[identity] = dict(
                 stamp_ns=stamp,
@@ -143,13 +154,14 @@ class Tracker:
                 yaw=yaw,
                 smooth_yaw=smooth,
                 motion=motion,
+                camera_motion=camera_motion,
                 pose=None if pose is None else np.array(pose, dtype=float, copy=True),
             )
         result["lost_track_ids"] = [identity for identity in self.tracks if identity not in tracks]
         result["predicted_objects"] = [
             predicted for identity, prediction in predictions.items()
             if identity not in tracks
-            and (predicted := self._predicted_object(identity, old[identity], prediction, stamp)) is not None
+            and (predicted := self._predicted_object(identity, old[identity], prediction, stamp, camera_motion)) is not None
         ]
         # Missing frames never update a KF, extend its lifetime, or become valid observations.
         self.tracks = {**old, **tracks}

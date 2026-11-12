@@ -10,7 +10,7 @@ import numpy as np
 
 from box4d.config import Config
 from box4d.edges import rgb_depth_edges
-from box4d.geometry import Plane
+from box4d.geometry import Plane, transform_points
 from box4d.results import empty_result
 from box4d.synthetic import Renderer, default_camera, world_box
 from box4d.temporal import TemporalPipeline
@@ -102,6 +102,34 @@ class TrackingDiagnosticsTests(unittest.TestCase):
         self.assertFalse(first["selected"])
         self.assertIn("feature_reprojection", first["failed_checks"])
         json.dumps(details, allow_nan=False)
+
+    def test_current_rgbd_pose_survives_large_displacement_from_old_observation(self):
+        pipeline, frame, gray, distance = self.inputs()
+        current, _ = pipeline._advance(frame, deepcopy(self.seed), gray, distance)
+        pose = np.asarray(current["T_camera_from_box"])
+        quad = np.asarray(current["faces"][0]["quad"])
+        samples, _, plane = pipeline._sample_tracking_plane(frame, quad)
+        samples = samples[np.abs(samples @ plane.normal + plane.d) < pipeline.cfg.plane_threshold_m]
+        model = self.seed["model"]
+        uv = frame.camera.project(transform_points(pose, model))
+        stale = deepcopy(self.seed)
+        stale["pose"] = pose.copy()
+        stale["pose"][0, 3] -= .30
+        stale.pop("motion", None)
+        # ID association settings must not reject a current measured pose,
+        # including the joint fallback's shared acceptance path.
+        pipeline.cfg.track_max_distance_m = .01
+        for solver in ("iterative", "joint"):
+            with self.subTest(solver=solver):
+                trial = pipeline._new_pose_trial({}, solver)
+                candidate = pipeline._evaluate_tracking_pose(
+                    frame, stale, pose.copy(), model, uv, samples, plane, quad, distance, trial
+                )
+                self.assertTrue(trial["accepted"])
+                self.assertFalse(trial["position_gate_enabled"])
+                self.assertGreater(trial["position_residual_m"], .29)
+                self.assertNotIn("position_limit_m", trial)
+                np.testing.assert_allclose(candidate["pose"][:3, 3], pose[:3, 3], atol=.003)
 
     def test_candidate_order_does_not_override_a_better_measurement(self):
         pipeline, frame, gray, distance = self.inputs()

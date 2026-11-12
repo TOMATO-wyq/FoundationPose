@@ -43,9 +43,11 @@ class ImuRecorderTests(unittest.TestCase):
         source = Mock()
         source.latest.camera.frame_id = "camera_color_optical_frame"
         recorder = ImuBagRecorder(source, output)
-        source.node.get_subscriptions_info_by_topic.return_value = [SimpleNamespace(node_name=recorder.node_name)]
+        source.node.get_subscriptions_info_by_topic.return_value = []
 
         def probes():
+            source.node.get_subscriptions_info_by_topic.return_value = [
+                SimpleNamespace(node_name=recorder.node_name, endpoint_gid=[1, 2, 3])]
             recorder.subscriptions = ["accel_probe", "gyro_probe"]
             recorder.listener = Mock()
             if ready:
@@ -75,6 +77,7 @@ class ImuRecorderTests(unittest.TestCase):
             command = args[0]
             self.assertEqual(command[:3], ["ros2", "bag", "record"])
             self.assertIn("sqlite3", command)
+            self.assertNotIn("--node-name", command)
             self.assertEqual(command[-3:], [*recorder.topics, "/tf_static"])
             self.assertNotIn("/camera/camera/rgbd", command)
             self.assertTrue(kwargs["start_new_session"])
@@ -86,6 +89,25 @@ class ImuRecorderTests(unittest.TestCase):
             self.assertTrue(reference["raw_messages_preserved"])
             self.assertFalse(reference["live_up_modified"])
             self.assertTrue((Path(temporary) / "imu_reference.json").is_file())
+            recorder.close()
+
+    def test_existing_recorder_endpoints_do_not_satisfy_startup_readiness(self):
+        with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
+            recorder, source, process, _, _, _ = self.run_started(stack, Path(temporary))
+            existing = SimpleNamespace(node_name=recorder.node_name, endpoint_gid=[9, 8, 7])
+            source.node.get_subscriptions_info_by_topic.return_value = [existing]
+            setup = recorder._setup_probes.side_effect
+
+            def probes():
+                setup()
+                source.node.get_subscriptions_info_by_topic.return_value = [existing]
+                self.assertFalse(recorder._ready())
+                source.node.get_subscriptions_info_by_topic.return_value = [
+                    existing, SimpleNamespace(node_name=recorder.node_name, endpoint_gid=[1, 2, 3])]
+                self.assertTrue(recorder._ready())
+
+            recorder._setup_probes.side_effect = probes
+            recorder.start()
             recorder.close()
 
     def test_close_sends_sigint_waits_verifies_bag_and_is_idempotent(self):

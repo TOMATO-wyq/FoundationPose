@@ -9,7 +9,6 @@ import signal
 import subprocess
 import threading
 import time
-import uuid
 
 from .io import dump_json
 
@@ -92,7 +91,9 @@ class ImuBagRecorder:
         self.source, self.output = source, Path(output)
         self.topics = (accel_topic, gyro_topic)
         self.bag = self.output / "imu_bag"
-        self.node_name = "box4d_imu_recorder_" + uuid.uuid4().hex[:10]
+        # Humble's ros2 bag record has no --node-name option.
+        self.node_name = "rosbag2_recorder"
+        self._existing_subscription_gids = {}
         self.process = self.log = self.listener = self.buffer = None
         self.subscriptions = []
         self.condition = threading.Condition()
@@ -138,6 +139,7 @@ class ImuBagRecorder:
             return False
         # A live probe alone cannot prove rosbag2 finished discovering its topics.
         return all(any(info.node_name == self.node_name
+                       and tuple(info.endpoint_gid) not in self._existing_subscription_gids.get(topic, set())
                        for info in self.source.node.get_subscriptions_info_by_topic(topic))
                    for topic in (*self.topics, "/tf_static"))
 
@@ -178,9 +180,16 @@ class ImuBagRecorder:
         qos_path.write_text(json.dumps(qos, indent=2) + "\n")
         self.log = (self.output / "imu_record.log").open("w")
         try:
+            # The CLI uses a fixed node name. An already-running recorder must
+            # not satisfy readiness for this process before it subscribes.
+            self._existing_subscription_gids = {
+                topic: {tuple(info.endpoint_gid)
+                        for info in self.source.node.get_subscriptions_info_by_topic(topic)}
+                for topic in (*self.topics, "/tf_static")
+            }
             self.process = subprocess.Popen(
                 ["ros2", "bag", "record", "-s", "sqlite3", "-o", str(self.bag),
-                 "--node-name", self.node_name, "--max-cache-size", "1048576",
+                 "--max-cache-size", "1048576",
                  "--qos-profile-overrides-path", str(qos_path), *self.topics, "/tf_static"],
                 stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT,
                 start_new_session=True,

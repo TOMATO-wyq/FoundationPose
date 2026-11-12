@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <stdexcept>
 
@@ -21,10 +22,26 @@ std::runtime_error io_error(const std::string & operation)
   return std::runtime_error(operation + ": " + std::strerror(errno));
 }
 
+unsigned int baud_flag(int baudrate)
+{
+  // 标准速率与 pySerial 一样使用 B* 常量，仅自定义速率使用 BOTHER。
+  switch (baudrate) {
+    case 9600: return B9600;
+    case 19200: return B19200;
+    case 38400: return B38400;
+    case 57600: return B57600;
+    case 115200: return B115200;
+    case 230400: return B230400;
+    case 460800: return B460800;
+    case 921600: return B921600;
+    default: return BOTHER;
+  }
+}
+
 void write_speed(VelocityFrame & frame, std::size_t offset, double speed)
 {
   // 线速度用有符号 int16 表示 mm/s，小端序；转换时向零截断。
-  const auto value = static_cast<std::int16_t>(std::clamp(speed, -0.30, 0.30) * 1000.0);
+  const auto value = static_cast<std::int16_t>(std::clamp(speed, -0.50, 0.50) * 1000.0);
   const auto bits = static_cast<std::uint16_t>(value);
   frame[offset] = static_cast<std::uint8_t>(bits & 0xff);
   frame[offset + 1] = static_cast<std::uint8_t>(bits >> 8);
@@ -32,13 +49,21 @@ void write_speed(VelocityFrame & frame, std::size_t offset, double speed)
 
 }  // namespace
 
-VelocityFrame encode_velocity(double vx, double vy)
+VelocityFrame encode_velocity(double vx, double vy, std::int8_t mode, double wire_wz)
 {
+  if (!std::isfinite(vx) || !std::isfinite(vy) || !std::isfinite(wire_wz)) {
+    throw std::invalid_argument("velocity values must be finite");
+  }
   VelocityFrame frame{};
   frame[0] = 0xa5;
   write_speed(frame, 1, vx);
   write_speed(frame, 3, vy);
-  // 下标 5～6 为角速度 int(vw*10)，下标 7 为单字节 mode，均保持为零。
+  // 与旧键盘接口相同：角速度乘 10、有符号小端；方向转换由节点完成。
+  const auto angular = static_cast<std::uint16_t>(static_cast<std::int16_t>(
+    std::clamp(wire_wz, -3276.7, 3276.7) * 10.0));
+  frame[5] = static_cast<std::uint8_t>(angular & 0xff);
+  frame[6] = static_cast<std::uint8_t>(angular >> 8);
+  frame[7] = static_cast<std::uint8_t>(mode);
   // 以下字节位置从 0 开始：CRC8 初值为 0、多项式为 0x07，
   // 仅覆盖下标 1～7，不包含帧头 A5、CRC 字节和帧尾 FF。
   std::uint8_t crc = 0;
@@ -64,6 +89,9 @@ SerialPort::~SerialPort()
 
 void SerialPort::open(const std::string & path, int baudrate)
 {
+  if (baudrate <= 0) {
+    throw std::invalid_argument("baudrate must be positive");
+  }
   close();
   // 非阻塞方式打开，发送时由 poll 控制等待时间，避免卡住 ROS 定时回调。
   const int fd = ::open(path.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
@@ -85,15 +113,23 @@ void SerialPort::open(const std::string & path, int baudrate)
     settings.c_iflag = 0;
     settings.c_oflag = 0;
     settings.c_lflag = 0;
-    settings.c_cflag &= ~(CBAUD | CSIZE | CSTOPB | PARENB | CRTSCTS);
-    settings.c_cflag |= BOTHER | CS8 | CLOCAL | CREAD;
-    // termios2 + BOTHER 支持底盘使用的非标准波特率 961200。
+    settings.c_cflag &= ~(CBAUD | CIBAUD | CSIZE | CSTOPB | PARENB | CMSPAR | CRTSCTS);
+    settings.c_cflag |= baud_flag(baudrate) | CS8 | CLOCAL | CREAD;
+    // 默认使用标准 B115200；termios2 + BOTHER 保留自定义波特率支持。
     settings.c_ispeed = static_cast<unsigned int>(baudrate);
     settings.c_ospeed = static_cast<unsigned int>(baudrate);
     settings.c_cc[VMIN] = 0;
     settings.c_cc[VTIME] = 0;
     if (::ioctl(fd, TCSETS2, &settings) < 0) {
       throw io_error("set serial settings");
+    }
+    // 对齐键盘端 pySerial 的默认 DTR/RTS 电平；禁用流控不等于设置线路电平。
+    int modem_lines = TIOCM_DTR | TIOCM_RTS;
+    if (::ioctl(fd, TIOCMBIS, &modem_lines) < 0 && errno != EINVAL && errno != ENOTTY) {
+      throw io_error("set serial DTR/RTS");
+    }
+    if (::ioctl(fd, TCFLSH, TCIFLUSH) < 0) {
+      throw io_error("flush serial input");
     }
   } catch (...) {
     // 配置尚未成功，fd 仍由本函数负责清理，不交给对象保存。
@@ -103,12 +139,12 @@ void SerialPort::open(const std::string & path, int baudrate)
   fd_ = fd;
 }
 
-void SerialPort::send(double vx, double vy)
+void SerialPort::send(double vx, double vy, std::int8_t mode, double wire_wz)
 {
   if (fd_ < 0) {
     throw std::runtime_error("serial port is not open");
   }
-  const auto frame = encode_velocity(vx, vy);
+  const auto frame = encode_velocity(vx, vy, mode, wire_wz);
   // 单调时钟不受系统校时影响；整帧所有 write/poll 共用 20 ms 预算。
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(20);
   std::size_t offset = 0;

@@ -3,10 +3,30 @@ import multiprocessing as mp
 import time
 
 
+def configure_qt_fonts():
+    """Repair pip OpenCV's missing bundled font path after importing cv2."""
+    import os
+    from pathlib import Path
+
+    current = os.environ.get("QT_QPA_FONTDIR")
+    if current and Path(current).is_dir():
+        return current
+    for directory in (
+        "/usr/share/fonts/truetype/dejavu",
+        "/usr/share/fonts/truetype/liberation2",
+        "/usr/share/fonts/truetype/freefont",
+    ):
+        if Path(directory).is_dir():
+            os.environ["QT_QPA_FONTDIR"] = directory
+            return directory
+    return None
+
+
 def _display(buffer, shape, lock, version, command, stopping, fps_value, window):
     import cv2
     import numpy as np
     from collections import deque
+    configure_qt_fonts()
     cv2.setNumThreads(1)
     shared=np.frombuffer(buffer,dtype=np.uint8).reshape(shape)
     cv2.namedWindow(window,cv2.WINDOW_NORMAL|cv2.WINDOW_KEEPRATIO)

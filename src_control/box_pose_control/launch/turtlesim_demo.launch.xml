@@ -3,8 +3,8 @@
   <arg name="size" default="big"/>
   <arg name="target_distance_m" default="0.30"/>
   <arg name="target_lateral_m" default="0.0"/>
-  <arg name="max_forward_speed" default="0.10"/>
-  <arg name="max_lateral_speed" default="0.10"/>
+  <arg name="max_forward_speed" default="0.50"/>
+  <arg name="max_lateral_speed" default="0.50"/>
   <arg name="meters_per_unit" default="0.1"/>
   <arg name="initial_forward_units" default="3.5"/>
   <arg name="initial_left_units" default="1.5"/>
@@ -40,6 +40,8 @@
   <node pkg="box_pose_control" exec="box_pose_control_node" name="box_pose_control"
         output="screen">
     <param from="$(find-pkg-share box_pose_control)/config/control.yaml"/>
+    <!-- 演示桥接模拟光轴与底盘前进方向一致，不套用实车偏航。 -->
+    <param name="camera_yaw_deg" value="0.0"/>
     <param name="size" value="$(var size)"/>
     <param name="target_lateral_m" value="$(var target_lateral_m)"/>
     <param name="dry_run" value="true"/>

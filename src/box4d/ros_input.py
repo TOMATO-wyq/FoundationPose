@@ -2,6 +2,7 @@
 
 import os
 import queue
+from dataclasses import replace
 from collections import deque
 import threading
 import time
@@ -49,7 +50,8 @@ def frame_from_message(message, bridge, sequence, depth_scale=0.001, max_sync_ns
 
 class RosSource:
     def __init__(
-        self, topic="/camera/camera/rgbd", depth_scale=0.001, max_sync_ms=0.0, rectified=False, imu_topic=None
+        self, topic="/camera/camera/rgbd", depth_scale=0.001, max_sync_ms=0.0, rectified=False, imu_topic=None,
+        motion_config=None,
     ):
         import rclpy
         from rclpy.node import Node
@@ -100,7 +102,15 @@ class RosSource:
         self.imu_samples = deque(maxlen=2048)
         self.imu_received_count = self.imu_duplicate_count = 0
         self.imu_buffer = self.imu_listener = self.imu_subscription = None
-        if imu_topic is not None:
+        self.motion_config = motion_config
+        self.gyro_enabled = bool(motion_config is not None and motion_config.camera_rotation_compensation)
+        self.gyro_rows = deque(maxlen=4096)
+        self.gyro_condition = threading.Condition()
+        self.gyro_rotation = None
+        self.gyro_origin = self.gyro_target = None
+        self.gyro_received = self.gyro_rejected = self.rotation_frames = self.rotation_missing = 0
+        self.gyro_error = None
+        if imu_topic is not None or self.gyro_enabled:
             from sensor_msgs.msg import Imu
             from rclpy.qos import qos_profile_sensor_data
             from tf2_ros import Buffer, TransformListener
@@ -108,6 +118,7 @@ class RosSource:
             self.imu_buffer = Buffer()
             self.imu_listener = TransformListener(self.imu_buffer, self.node)
 
+        if imu_topic is not None:
             def receive_imu(message):
                 a = message.linear_acceleration
                 row = (time.monotonic(), stamp_ns(message), message.header.frame_id, [a.x, a.y, a.z])
@@ -121,6 +132,22 @@ class RosSource:
 
             self.imu_subscription = self.node.create_subscription(
                 Imu, imu_topic, receive_imu, qos_profile_sensor_data
+            )
+        if self.gyro_enabled:
+            def receive_gyro(message):
+                w = message.angular_velocity
+                vector = [w.x, w.y, w.z]
+                if (message.angular_velocity_covariance[0] < 0 or not np.isfinite(vector).all()
+                        or not message.header.frame_id):
+                    self.gyro_rejected += 1
+                    return
+                with self.gyro_condition:
+                    self.gyro_rows.append((stamp_ns(message), message.header.frame_id, vector))
+                    self.gyro_received += 1
+                    self.gyro_condition.notify_all()
+
+            self.gyro_subscription = self.node.create_subscription(
+                Imu, motion_config.camera_gyro_topic, receive_gyro, qos_profile_sensor_data
             )
         self.thread = threading.Thread(target=rclpy.spin, args=(self.node,), daemon=True)
         self.thread.start()
@@ -157,7 +184,60 @@ class RosSource:
                         "Check the camera stream/USB logs and publisher/subscriber QoS."
                     )
                 raise TimeoutError(detail)
-            return self.latest
+            frame = self.latest
+        return self._attach_camera_motion(frame) if getattr(self, "gyro_enabled", False) else frame
+
+    def _attach_camera_motion(self, frame):
+        from scipy.spatial.transform import Rotation
+        from .camera_motion import GyroRotations
+        from tf2_ros import TransformException
+
+        cfg = self.motion_config
+        with self.gyro_condition:
+            # Wait at most 15 ms for a sample bracketing the image source time.
+            # Never extrapolate old gyro data or change the RGB-D timestamp.
+            if self.gyro_rows:
+                self.gyro_condition.wait_for(
+                    lambda: bool(self.gyro_rows) and self.gyro_rows[-1][0]
+                    + int(cfg.camera_gyro_time_offset_s * 1e9) >= frame.stamp_ns, timeout=.015
+                )
+            rows = list(self.gyro_rows)
+            self.gyro_rows.clear()
+        try:
+            if rows:
+                origin = rows[0][1]
+                if (self.gyro_rotation is None or origin != self.gyro_origin
+                        or frame.camera.frame_id != self.gyro_target):
+                    tf = self.imu_buffer.lookup_transform(
+                        frame.camera.frame_id, origin, self.rclpy.time.Time()
+                    ).transform
+                    q = tf.rotation
+                    extrinsic = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
+                    self.gyro_rotation = GyroRotations(
+                        extrinsic, max_gap_s=cfg.camera_gyro_max_gap_s,
+                        bias=cfg.camera_gyro_bias_rad_s, time_offset_s=cfg.camera_gyro_time_offset_s,
+                    )
+                    self.gyro_origin, self.gyro_target = origin, frame.camera.frame_id
+                for stamp, source_frame, vector in rows:
+                    if source_frame != self.gyro_origin:
+                        # A changed sensor frame needs a fresh extrinsic/reference.
+                        self.gyro_rotation = None
+                        raise ValueError("gyro optical frame changed")
+                    self.gyro_rotation.add(stamp, vector)
+            context = None if self.gyro_rotation is None else self.gyro_rotation.at(frame.stamp_ns)
+            self.gyro_error = None if context is not None else "gyro does not bracket RGB-D source time"
+        except (ValueError, TransformException) as error:
+            context = None
+            self.gyro_error = str(error)
+        if context is None:
+            self.rotation_missing += 1
+            self.node.get_logger().warning(
+                f"Camera rotation unavailable: {self.gyro_error}; using RGB-D tracking without gyro.",
+                throttle_duration_sec=5.0,
+            )
+            return frame
+        self.rotation_frames += 1
+        return replace(frame, camera_motion=context)
 
     def statistics(self):
         stamps = self.source_stamps
@@ -168,6 +248,11 @@ class RosSource:
             duplicate_or_old=self.duplicate_count,
             observed_source_fps=fps,
             last_error=self.error,
+            camera_rotation=dict(enabled=self.gyro_enabled, gyro_messages=self.gyro_received,
+                                 rejected_gyro_messages=self.gyro_rejected,
+                                 compensated_frames=self.rotation_frames,
+                                 missing_rotation_frames=self.rotation_missing,
+                                 last_error=self.gyro_error),
         )
 
     def estimate_up(self, target_frame, duration=2.0, timeout=10.0):

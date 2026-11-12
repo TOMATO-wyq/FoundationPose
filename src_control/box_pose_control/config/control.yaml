@@ -6,16 +6,36 @@ box_pose_control:
     control_rate: 10.0
     target_distance_m: 0.30
     target_lateral_m: 0.0
-    lateral_gain: 1.0
-    forward_gain: 1.0
-    lateral_tolerance_m: 0.01
-    distance_tolerance_m: 0.02
-    lateral_resume_m: 0.015
-    distance_resume_m: 0.03
-    max_forward_speed: 0.10
-    max_lateral_speed: 0.10
+    # 相机位于车体正中间，水平朝前，光轴与车头方向一致。
+    # 无需安装偏航补偿，目标位置仍以相机为原点。
+    camera_yaw_deg: 0.0
+    lateral_gain: 2.0
+    forward_gain: 4.0
+    lateral_tolerance_m: 0.02
+    distance_tolerance_m: 0.03
+    lateral_resume_m: 0.03
+    distance_resume_m: 0.045
+    max_forward_speed: 0.50
+    max_lateral_speed: 0.50
+    yaw_enabled: true
+    yaw_tolerance_deg: 5.0
+    yaw_resume_deg: 8.0
+    yaw_gain: 1.2
+    max_yaw_speed: 0.4
+    far_max_yaw_speed: 0.2
+    yaw_fine_distance_m: 0.7
+    yaw_unreliable_approach_speed: 0.15
+    yaw_jump_deg: 8.0
+    yaw_confirm_frames: 3
+    grip_stable_s: 0.4
+    # 实车反馈旧取反约定会越转越歪：默认直接发送；接口单位仍按 rad/s。
+    serial_yaw_sign: 1.0
+    serial_yaw_scale: 1.0
     observation_timeout_s: 0.5
+    # 距上次有效目标观测至少 1 秒且目标已丢失后，允许重新锁定同规格的新 ID。
+    target_reacquire_timeout_s: 1.0
     detections_topic: /box4d/detections
     up_topic: /box4d/up_camera
     serial_port: /dev/ttyUSB0
-    baudrate: 961200
+    # 与 run_keyboard_test 的 teleop_run.launch.py -> get_and_pub.py 保持一致。
+    baudrate: 115200

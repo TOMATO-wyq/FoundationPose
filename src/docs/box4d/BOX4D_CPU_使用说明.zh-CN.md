@@ -73,12 +73,20 @@ PYTHONPATH=src python3 -m unittest discover -s src/tests -p 'test_box4d_*.py' -v
 | `temporal_recovery` | 默认关闭，全图彩色配置开启；用当前图像特征与当前深度延续几何位姿，失败时不补发旧有效位姿 |
 | `async_detection` | 实时入口启用连续跟踪时，将重新检测放到后台；离线入口仍同步处理，保证回放可重复 |
 | `redetect_interval_s` | 重新搜索的周期，默认 0.15 秒；失去跟踪时提前搜索，后台只留最新待处理帧 |
-| `motion_prediction` | 默认 `true`；用位置/速度匀速 KF 预测短时漏检位置，与当前帧观测分开输出 |
+| `motion_prediction` | 默认 `true`；KF 预测短时漏检位置，与当前帧观测分开输出 |
+| `prediction_model` | `cv` 为位置／速度模型（默认），`ca` 增加加速度估计；实时入口支持 `--prediction-model ca` 试验 |
 | `prediction_max_gap_s` | 从最后一次有效观测起最多预测的时间，默认 0.3 秒 |
 | `prediction_max_std_m` | 预测位置不确定度上限（标准差），默认 0.1 米；超过后停止预测输出 |
 | `prediction_accel_std_m_s2` | 匀速模型中未建模加速度的标准差，默认 1.0 m/s²；越大，不确定度增长越快 |
 | `prediction_measurement_std_m` | 视觉位置测量噪声的标准差，默认 0.01 米 |
 | `prediction_initial_velocity_std_m_s` | 新轨迹初始速度不确定度的标准差，默认 0.5 m/s |
+| `prediction_jerk_std_m_s3` | 仅 CA：加速度变化噪声的标准差，默认 5.0 m/s³；不是最大加速度 |
+| `prediction_initial_accel_std_m_s2` | 仅 CA：初始加速度不确定度，默认 2.0 m/s² |
+| `camera_rotation_compensation` | 代码默认关闭；D435i 实时配置开启，使用陀螺仪补偿相机旋转；支持 `--no-camera-rotation` 对照 |
+| `camera_gyro_topic` | 角速度 ROS 话题，默认 `/camera/camera/gyro/sample`，单位 rad/s |
+| `camera_gyro_max_gap_s` | 陀螺仪相邻样本最大间隔，默认 0.03 秒；超过则建立新旋转参考，不跨间断积分 |
+| `camera_gyro_time_offset_s` | 加到陀螺仪源时间的偏移，默认 0 秒；须经标定再改，不能拿后台检测耗时填写 |
+| `camera_gyro_bias_rad_s` | 传感器坐标系中的三轴零偏，积分前扣除；默认 `[0,0,0]`，未自动估计 |
 
 目前只实现正方体模型。若三边明显不同，不能只把某一条边填入 `sizes_m`；需要扩展长方体模型及其 180° 对称性。12% 尺寸门限用于候选校验，不代表允许 12% 的定位误差。
 
@@ -92,9 +100,17 @@ PYTHONPATH=src python3 -m unittest discover -s src/tests -p 'test_box4d_*.py' -v
 
 ### 短时漏检预测
 
-KF 的状态为相机光学坐标系中的 `[X,Y,Z,Vx,Vy,Vz]`，速度表示目标相对相机的运动。它按**源图像时间戳**计算时间间隔，不按显示刷新次数预测；至少取得两次有效观测后，才在漏检时输出预测位置。重新得到观测时，用当前视觉位置校正状态，原始观测字段保持不变。
+CV 的状态为 `[X,Y,Z,Vx,Vy,Vz]`，CA 增加 `[Ax,Ay,Az]`。它按**源图像时间戳**计算时间间隔，不按显示刷新次数预测；CV 至少取得两次、CA 至少三次有效观测后，才在漏检时输出预测位置。重新得到观测时，用当前视觉位置校正状态，原始观测字段保持不变。
 
-预测位置用于目标关联、光流初值、迭代 PnP／联合求解初值，以及位移残差门控；当前 RGB-D 的深度、重投影和边界检查仍需通过。漏检预测单独输出到 `predicted_objects`。显示中以**紫色虚线三维框、`PRED` 和距最后观测的秒数**标识；普通显示和 `--display-smoothed` 都会显示。框的平移来自 KF，旋转保持最后一次实测值。它不预测转向，也没有融合 IMU 或里程计，因此突然加速、急转弯或长时间遮挡仍可能跟丢。超过预测时间或不确定度上限后，预测框消失。已有启动命令无需增加参数，重启识别进程即可使用默认配置；输出预测项需要开启 `tracking`，光流／PnP 预测初值还需要开启 `temporal_recovery`。
+启用相机旋转补偿后，角速度先通过 TF 外参变换到 RGB 光学坐标，按源时间积分；图像时刻只在连续陀螺仪样本之间插值，不外推过期数据。滤波在旋转稳定的轴系内估计，原点仍跟随相机移动；预测位置、协方差和静止方块朝向再变回当前相机坐标。相机平移造成的相对运动仍由视觉估计，没有通过加速度计积分位置，也不要求里程计。此路径面向相机刚性固定、场地方块静止的场景；现有 UP 仍是启动时参考，尚非完整视觉惯性定位。
+
+预测用于目标关联、光流初值和位姿求解初值；不再因固定 15 cm 位移拒绝观测。当前 RGB-D 的深度、重投影和边界检查仍需通过。方向趋势比较先扣除相机旋转，避免把小车转弯当作方块自转。缺失 gyro、TF 不可用或积分参考改变时，丢弃不兼容的滤波历史，回退到当前 RGB-D 跟踪；运行日志记录缺失次数。纯预测仍按时间和不确定度上限停止。
+
+漏检预测单独输出到 `predicted_objects`，显示中以**紫色虚线三维框、`PRED` 和距最后观测的秒数**标识；普通显示和 `--display-smoothed` 都会显示。预测框假设目标自身不转动，有 gyro 时补偿相机转动；无 gyro 时保持上次实测旋转。已有 D435i 启动命令无需增加参数，重启识别进程即可使用旋转补偿；相机驱动需开启 `enable_gyro`（项目默认启动脚本已开启）。输出预测项需要开启 `tracking`，光流／PnP 预测初值还需要开启 `temporal_recovery`。
+
+2026-11-11 同源后台事件对照：887 帧中，原 CV 输出 389 帧／564 次物体观测，gyro+CV 为 390／583，gyro+CA 为 390／565；未补偿旋转的 CA 为 302／465。改善有限，CA 的物体观测少于 gyro+CV，现场配置先用 gyro+CV。验证见 `outputs/live_diagnosis_20261111_015913/camera_motion_20261111/验证说明.md`。
+
+旧录制若有 `imu_reference.json` 与原生 `imu_bag`，离线入口会读取角速度和外参；需先 `source /opt/ros/humble/setup.bash`。保存了逐帧 `camera_motion` 的新数据无需 ROS 即可读取旋转。没有 sidecar 的录制明确报告 `no_gyro_sidecar`，按纯 RGB-D 处理。可用 `--prediction-model ca` 和 `--no-camera-rotation` 做单项对照。
 
 `objects` 仍只包含当前帧通过校验的真实 RGB-D 观测，ROS `/box4d/detections` 也仍只发布这些有效观测。预测项带 `source="kf_prediction"`、`status="predicted"`、`valid=false`，不会冒充有效检测；当前控制器在没有有效观测时仍执行漏检停车。显示中的 `observed=0 predicted=1` 表示只有预测框，并未重新检测到目标。
 
@@ -145,6 +161,11 @@ bash src/box4d_ros.sh --domain 86 live \
 未设置则使用 0。已有相机驱动在 domain 0 时，终端 B 改为 `--domain 0` 即可复用。
 RGB-D 超时信息会打印话题、domain、发布者数量、有效／拒绝／重复帧数；`Publishers=0` 优先检查 domain、
 `--topic` 和 `enable_rgbd`，有发布者但收不到数据再检查相机流与 QoS。延长超时不能解决 domain 不匹配。
+
+相机显示 `RealSense Node Is Up!`、domain 相同但仍然 `Publishers=0` 时，也要检查
+`echo "$CYCLONEDDS_URI"` 与该配置的发现地址。迁移电脑后，继承的 CycloneDDS 配置可能关闭组播，
+且只向旧网络地址发现节点，导致同一台电脑上的相机和识别互相不可见。相机与识别启动脚本会保留
+原有 CycloneDDS 配置，并补充 `127.0.0.1` 单播发现；无需修改用户目录下的 DDS 配置。
 
 如果 `--auto-up` 超时，程序会报告 IMU 话题、ROS 域、发布者数量、收到的消息数、重复/倒退消息数及有效样本时间跨度。`enable_accel=true` 且话题存在，也可能没有实际数据；不能仅凭参数值判断 IMU 正常。没有发布者时检查域、`--imu-topic` 和 `enable_accel`。有发布者但收到 0 条消息时检查驱动日志；本机曾出现 `Motion Module failure`，关闭再开启 `enable_accel` 也未恢复，调用设备复位后恢复约 100 Hz 加速度数据。
 

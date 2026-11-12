@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from .detector import Face, _edge_support
-from .geometry import Plane, fit_plane, ray_plane, unit
+from .geometry import Plane, fit_plane, ray_plane, unit, plane_limits
 
 
 def _inside(quad, frame, cfg):
@@ -32,7 +32,10 @@ def visibility(frame, quad, plane, cfg):
         (1 - s.ravel()[:, None]) * quad[0] + s.ravel()[:, None] * quad[1]
     ) + v.ravel()[:, None] * ((1 - s.ravel()[:, None]) * quad[3] + s.ravel()[:, None] * quad[2])
     ij = np.rint(uv).astype(int)
-    z = frame.depth[ij[:, 1], ij[:, 0]]
+    inside = ((ij[:, 0] >= 0) & (ij[:, 0] < frame.camera.width)
+              & (ij[:, 1] >= 0) & (ij[:, 1] < frame.camera.height))
+    z = np.zeros(len(ij), dtype=np.float32)
+    z[inside] = frame.depth[ij[inside, 1], ij[inside, 0]]
     predicted = ray_plane(frame.camera, uv, plane)[:, 2]
     good = np.isfinite(z) & (z > 0)
     delta = z - predicted
@@ -43,7 +46,55 @@ def visibility(frame, quad, plane, cfg):
         foreground_depth_fraction=float(front.mean()),
         explained_depth_fraction=float((on | front).mean()),
         valid_depth_fraction=float(good.mean()),
+        outside_image_fraction=float((~inside).mean()),
     )
+
+
+def upper_model_allowed(quad, frame, cfg):
+    """Only the inferred lower corners may leave the physical image.
+
+    Callers supply top-first order. Deliberate search-ROI cuts remain invalid.
+    """
+    if cfg.roi_xyxy is not None:
+        return _inside(quad, frame, cfg)
+    return bool(np.all(quad[:2] > 2)
+                and np.all(quad[:2, 0] < frame.camera.width - 3)
+                and np.all(quad[:2, 1] < frame.camera.height - 3))
+
+
+def upper_boundary_evidence(frame, quad, plane, cfg, distance, size):
+    """Remeasure the full top and both visible sides of a clipped model."""
+    if cfg.up_camera is None:
+        raise ValueError("upper partial face requires UP")
+    points = ray_plane(frame.camera, quad, plane)
+    ids = set(np.argsort(points @ np.asarray(cfg.up_camera))[-2:])
+    starts = [i for i in range(4) if {i, (i + 1) % 4} == ids]
+    if not starts:
+        raise ValueError("upper partial face has no complete top edge")
+    q = np.roll(quad, -starts[0], axis=0).copy()
+    if not upper_model_allowed(q, frame, cfg):
+        raise ValueError("upper partial face top or sides clipped")
+    visible = q.copy()
+    for top, bottom in ((0, 3), (1, 2)):
+        ok, a, b = cv2.clipLine((2, 2, frame.camera.width-4, frame.camera.height-4),
+                              tuple(np.rint(q[top]).astype(int)), tuple(np.rint(q[bottom]).astype(int)))
+        if not ok:
+            raise ValueError("upper partial face lacks both side segments")
+        visible[bottom] = b
+    xyz = ray_plane(frame.camera, visible, plane)
+    heights = np.abs((xyz[[3, 2]] - xyz[:2]) @ np.asarray(cfg.up_camera))
+    if min(heights) < .30 * size:
+        raise ValueError("upper partial face side segments too short")
+    _, support = _edge_support(visible, distance, backend=cfg.geometry_backend)
+    anchor_support = [support[i] for i in (0, 1, 3)]
+    if min(anchor_support) < cfg.partial_min_edge_support_fraction:
+        raise ValueError("upper partial face lacks current top or side boundary")
+    if not _edges_on_plane(frame, visible, plane, (2, 3), cfg):
+        raise ValueError("upper partial face boundaries lack current depth")
+    if not _top_supported(frame, xyz[:2], np.asarray(cfg.up_camera), plane, cfg):
+        raise ValueError("upper partial face top is a continuing plane")
+    return dict(anchor_edge_support=anchor_support, visible_outline_quad=visible.tolist(),
+                visible_height_m=float(min(heights)), upper_partial=True)
 
 
 def _top_supported(frame, top_points, up, plane, cfg):
@@ -156,7 +207,7 @@ def anchored_partial_face(
     top_uv = top_uv[np.argsort(top_uv[:, 0])]
     top = ray_plane(frame.camera, top_uv, plane)
     q = frame.camera.project(np.array([top[0], top[1], top[1] - up * size, top[0] - up * size]))
-    if not _inside(q, frame, cfg):
+    if not upper_model_allowed(q, frame, cfg):
         return None
     report = visibility(frame, q, plane, cfg)
     contact = report["visible_depth_fraction"] >= 0.85 and _wider_support_contact(
@@ -166,7 +217,9 @@ def anchored_partial_face(
         report["foreground_depth_fraction"] >= min_foreground_fraction
         and report["explained_depth_fraction"] >= 0.85
     )
-    if report["visible_depth_fraction"] < 0.30 or not (contact or occluded):
+    clipped = (report["outside_image_fraction"] > .05
+               and report["explained_depth_fraction"] + report["outside_image_fraction"] >= .85)
+    if report["visible_depth_fraction"] < 0.30 or not (contact or occluded or clipped):
         return None
     if not _top_supported(frame, top, up, plane, cfg):
         return None
@@ -187,6 +240,7 @@ def anchored_partial_face(
         visible_outline_quad=face.quad.tolist(),
         metric_width_m=float(width),
         visible_height_m=float(height),
+        upper_partial=True,
     )
     return Face(q, "bottom_occlusion_model", face.edge_support, True, report, plane)
 
@@ -302,14 +356,15 @@ def upright_patch_faces(frame, mask, hint, cfg, distance, color_labels=None):
         return []
     for index in range(count):
         q = corners(top - index * size, top - (index + 1) * size)
-        if not _inside(q, frame, cfg):
+        if not upper_model_allowed(q, frame, cfg):
             continue
         evidence = visibility(frame, q, plane, cfg)
         if index == count - 1:
             if (
                 evidence["visible_depth_fraction"] < 0.30
-                or evidence["foreground_depth_fraction"] < 0.08
-                or evidence["explained_depth_fraction"] < 0.85
+                or (evidence["foreground_depth_fraction"] < 0.08
+                    and evidence["outside_image_fraction"] < .05)
+                or evidence["explained_depth_fraction"] + evidence["outside_image_fraction"] < 0.85
             ):
                 continue
         elif evidence["visible_depth_fraction"] < 0.80:
@@ -323,6 +378,8 @@ def upright_patch_faces(frame, mask, hint, cfg, distance, color_labels=None):
             visible_outline_quad=corners(top - index * size, max(bottom, top - (index + 1) * size)).tolist(),
             metric_width_m=float(width),
             visible_height_m=float(min(size, height - index * size)),
+            anchor_edge_support=[float(support[i]) for i in (0, 1, 3)],
+            upper_partial=index == count - 1,
         )
         # Keep top-first order: it indexes the two genuinely observed top corners.
         faces.append(
@@ -338,11 +395,11 @@ def upright_patch_faces(frame, mask, hint, cfg, distance, color_labels=None):
     return faces
 
 
-def partial_samples(frame, face, cfg):
+def partial_samples(frame, face, cfg, diagnostics=None):
     """Reject foreground before fitting; never sample hidden corners as depth."""
-    q = face.quad
+    q = np.asarray(face.evidence.get("visible_outline_quad", face.quad), dtype=float)
     # Enforce the same image/ROI boundary policy as complete faces.
-    if not _inside(q, frame, cfg):
+    if not upper_model_allowed(face.quad, frame, cfg) or not _inside(q, frame, cfg):
         raise ValueError("occluded face clipped by image or search ROI")
     lo = np.floor(q.min(axis=0)).astype(int)
     hi = np.ceil(q.max(axis=0)).astype(int) + 1
@@ -355,9 +412,12 @@ def partial_samples(frame, face, cfg):
     good = np.isfinite(z) & (z >= cfg.min_depth_m) & (z <= cfg.max_depth_m)
     uv = np.column_stack((xx[good], yy[good]))
     xyz = frame.camera.rays(uv) * z[good, None]
-    good_plane = np.abs(xyz @ face.plane_hint.normal + face.plane_hint.d) < cfg.plane_threshold_m
+    good_plane = np.abs(xyz @ face.plane_hint.normal + face.plane_hint.d) < plane_limits(xyz, cfg)[0]
+    support = float(good_plane.sum() / max(1, len(xx)))
+    if diagnostics is not None:
+        diagnostics["visible_plane_support_fraction"] = support
     xyz = xyz[good_plane]
-    if len(xyz) < cfg.min_depth_samples or len(xyz) / max(1, len(xx)) < 0.30:
+    if len(xyz) < cfg.min_depth_samples or support < cfg.partial_min_plane_support_fraction:
         raise ValueError("occluded face lacks current measured plane support")
     if len(xyz) > cfg.max_depth_samples:
         xyz = xyz[np.linspace(0, len(xyz) - 1, cfg.max_depth_samples).astype(int)]

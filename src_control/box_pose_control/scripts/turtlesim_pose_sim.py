@@ -8,12 +8,11 @@
 数据流与真实系统一致：
   camera/turtle1 真实位姿 -> 本节点的假检测 -> /box4d/detections + /box4d/up_camera
   -> box_pose_control_node（dry_run）-> /box_pose_control/cmd_vel
-  -> 本节点把 vx/vy 积分成 camera 的世界位姿。
+  -> 本节点把 vx/vy/wz 积分成 camera 的世界位姿。
 
 注意：turtlesim 是差速模型，``/camera/cmd_vel`` 只接受 linear.x，直接发布
-linear.y 会被忽略。而控制器假设全向底盘（vx 前后、vy 左右且不转向），所以这里
-在 60 Hz 定时器里用 ``teleport_absolute`` 执行任意方向的平移，保持 camera 的
-朝向不变；这是对控制器假设最忠实的二维模拟。
+linear.y 会被忽略。这里在 60 Hz 定时器里用 teleport_absolute 同时模拟
+全向平移和旋转，并发布方块相对相机的真实旋转姿态。
 """
 
 import math
@@ -290,7 +289,12 @@ class TurtlesimPoseSim(Node):
         detection.bbox.center.position.x = x_m
         detection.bbox.center.position.y = 0.0
         detection.bbox.center.position.z = z_m
-        detection.bbox.center.orientation.w = 1.0
+        half = (self.box_pose.theta - self.camera_pose.theta) / 2
+        c, sn = math.cos(half), math.sin(half)
+        q = detection.bbox.center.orientation
+        q.x = q.w = 0.5 * (c - sn)
+        q.y = -0.5 * (c + sn)
+        q.z = 0.5 * (c + sn)
         detection.bbox.size.x = detection.bbox.size.y = detection.bbox.size.z = self.size_m
 
         detections = Detection3DArray()
@@ -332,17 +336,21 @@ class TurtlesimPoseSim(Node):
 
         # 控制器停止发布时，最多保持 cmd_timeout，防止最后一条速度一直生效。
         if self.cmd_at is None or now - self.cmd_at > self.cmd_timeout:
-            vx, vy = 0.0, 0.0
+            vx, vy, wz = 0.0, 0.0, 0.0
         else:
             # m/s -> turtlesim 单位/s
             vx = self.cmd.linear.x / self.scale
             vy = self.cmd.linear.y / self.scale
+            wz = self.cmd.angular.z
 
         cos_t, sin_t = math.cos(self.cam_theta), math.sin(self.cam_theta)
         dx = (vx * cos_t - vy * sin_t) * dt
         dy = (vx * sin_t + vy * cos_t) * dt
         self.cam_x = min(max(self.cam_x + dx, WORLD_MIN), WORLD_MAX)
         self.cam_y = min(max(self.cam_y + dy, WORLD_MIN), WORLD_MAX)
+
+        self.cam_theta = math.atan2(math.sin(self.cam_theta + wz * dt),
+                                    math.cos(self.cam_theta + wz * dt))
 
         # 上一次 teleport 还没完成时不重复排队；本地积分继续，服务空闲后会追到最新位姿。
         if (
@@ -367,7 +375,7 @@ class TurtlesimPoseSim(Node):
                 return
 
         # 速度为 0 时不重复发 teleport；at rest 的位姿已经由上一帧写入。
-        if vx == 0.0 and vy == 0.0:
+        if vx == 0.0 and vy == 0.0 and wz == 0.0:
             return
 
         request = TeleportAbsolute.Request()
@@ -379,7 +387,7 @@ class TurtlesimPoseSim(Node):
     def box_motion_tick(self):
         """box_motion=sweep 时，让 turtle1 在相机前方做实时横向/前后扫动。
 
-        方块在“相机初始朝向”的坐标系里运动，camera 仍只做平移、不转向。
+        方块在“相机初始朝向”的坐标系里运动，camera 同时响应平移和转向指令。
         运动幅度保持在相机前方，避免方块跑到 Z<=0 被控制器判为丢失。
         """
         if self.box_motion != "sweep" or not self.ready or self.box_origin is None:

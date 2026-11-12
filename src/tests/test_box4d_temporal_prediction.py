@@ -58,8 +58,8 @@ class TemporalPredictionTests(unittest.TestCase):
     def test_missing_depth_predicts_motion_then_recovers_without_new_detection(self):
         outcomes = {}
         for enabled in (False, True):
-            # A tight motion gate isolates prediction's contribution: ordinary
-            # inter-frame motion fits, accumulated motion across the gap does not.
+            # A tight ID association radius isolates prediction's contribution
+            # to identity continuity; it must not discard current RGB-D poses.
             pipeline, tracker = self.pipeline(motion_prediction=enabled, track_max_distance_m=0.015)
             last = self.warmup(pipeline, tracker)
             identity = last["objects"][0]["track_id"]
@@ -107,8 +107,12 @@ class TemporalPredictionTests(unittest.TestCase):
                 self.assertTrue(any(t.get("position_reference") == "kf_prediction"
                                     and t.get("accepted") for t in details["pose_trials"]))
         self.assertEqual(len(outcomes[True]["objects"]), 1)
-        self.assertEqual(outcomes[False]["objects"], [])
-        self.assertIn("position_jump", " ".join(outcomes[False]["temporal"]["tracking_failures"]))
+        self.assertEqual(len(outcomes[False]["objects"]), 1)
+        self.assertEqual(outcomes[False]["objects"][0]["source"], "current_rgbd_flow")
+        np.testing.assert_allclose(
+            outcomes[False]["objects"][0]["center_camera_m"], self.truth[11]["center_camera_m"], atol=.012
+        )
+        self.assertNotEqual(outcomes[False]["objects"][0]["track_id"], identity)
 
     def test_predictions_expire_from_last_observation_not_last_prediction(self):
         pipeline, tracker = self.pipeline()

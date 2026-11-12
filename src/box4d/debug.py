@@ -17,6 +17,7 @@ import time
 import cv2
 import numpy as np
 
+from common.display import configure_qt_fonts
 from .io import dump_json
 
 
@@ -87,7 +88,7 @@ TUNING_SPECS = (
     ("Redetect ms", "redetect_interval_s", 1000, 50, 10, 95),
     ("Detect age ms", "detector_max_age_s", 1000, 50, 10, 195),
     ("Track gap ms", "track_max_gap_s", 1000, 50, 10, 95),
-    ("Track travel cm", "track_max_distance_m", 100, 2, 1, 48),
+    ("ID match cm", "track_max_distance_m", 100, 2, 1, 48),
     ("Track min features", "track_min_features", 1, 4, 1, 16),
     ("Seed max features", "track_seed_max_features", 1, 4, 4, 49),
     ("Reseed min points", "track_min_reseed_features", 1, 4, 1, 36),
@@ -693,7 +694,7 @@ def render_stages(frame, result, snapshot, local_snapshots=(), tracks=(), face_i
                 )
             if "plane_rmse_m" in f:
                 lines.append(
-                    f"Plane RMS {f['plane_rmse_m']*1000:.2f} <= {cfg['plane_max_rmse_m']*1000:.2f}mm; support {f['plane_support']:.1%} >= {f.get('plane_support_min', cfg['plane_min_support_fraction']):.0%}"
+                    f"Plane RMS {f['plane_rmse_m']*1000:.2f} <= {f.get('plane_rmse_max_m', cfg['plane_max_rmse_m'])*1000:.2f}mm; support {f['plane_support']:.1%} >= {f.get('plane_support_min', cfg['plane_min_support_fraction']):.0%}"
                 )
             if "edge_lengths_m" in f:
                 lines.append(
@@ -766,6 +767,7 @@ def render_stages(frame, result, snapshot, local_snapshots=(), tracks=(), face_i
 
 
 def _display_stages(buffer, lock, version, shown, command, stopping, shape, layout, tuning_shared):
+    configure_qt_fonts()
     cv2.setNumThreads(1)
     shared = np.frombuffer(buffer, np.uint8).reshape(shape)
     names = STAGES if layout == "windows" else ("Box4D stages",)

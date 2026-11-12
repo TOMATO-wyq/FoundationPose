@@ -24,6 +24,8 @@ class Config:
     depth_edge_threshold_m: float = 0.02
     plane_threshold_m: float = 0.008
     plane_max_rmse_m: float = 0.006
+    plane_distance_noise: bool = False
+    plane_noise_cap_m: float = 0.012
     plane_min_support_fraction: float = 0.65
     partial_min_plane_support_fraction: float = 0.75
     stack_min_edge_support_fraction: float = 0.65
@@ -32,6 +34,7 @@ class Config:
     max_depth_samples: int = 384
     min_depth_fraction: float = 0.45
     size_tolerance_fraction: float = 0.12
+    fit_observed_face_size: bool = False
     max_reprojection_px: float = 3.0
     reprojection_reference_width_px: object = None
     max_depth_residual_m: float = 0.012
@@ -62,14 +65,22 @@ class Config:
     redetect_interval_s: float = 0.15
     track_max_gap_s: float = 0.30
     detector_max_age_s: float = 0.75
-    track_max_distance_m: float = 0.15
+    track_max_distance_m: float = 0.15  # ID/velocity association radius; never rejects a measured pose.
     smoothing_alpha: float = 0.5
     motion_prediction: bool = True
+    prediction_model: str = "cv"
     prediction_max_gap_s: float = 0.30
     prediction_max_std_m: float = 0.10
     prediction_accel_std_m_s2: float = 1.0
     prediction_measurement_std_m: float = 0.01
     prediction_initial_velocity_std_m_s: float = 0.5
+    prediction_jerk_std_m_s3: float = 5.0
+    prediction_initial_accel_std_m_s2: float = 2.0
+    camera_rotation_compensation: bool = False
+    camera_gyro_topic: str = "/camera/camera/gyro/sample"
+    camera_gyro_max_gap_s: float = 0.03
+    camera_gyro_time_offset_s: float = 0.0
+    camera_gyro_bias_rad_s: tuple = (0., 0., 0.)
     track_min_features: int = 4
     track_seed_max_features: int = 40
     track_feature_method: str = "adaptive"
@@ -134,13 +145,16 @@ class Config:
     def validate(self):
         for key in (
             "dimensions_nominal",
+            "fit_observed_face_size",
             "plane_proposals",
+            "plane_distance_noise",
             "allow_stack_inference",
             "upright_outline_proposals",
             "allow_bottom_occlusion",
             "refine_4d",
             "tracking",
             "motion_prediction",
+            "camera_rotation_compensation",
             "temporal_recovery",
             "async_detection",
             "track_joint_on_ambiguity",
@@ -156,6 +170,17 @@ class Config:
                 raise ValueError(f"{key} must be a JSON boolean")
         if self.require_target_colors and not self.analyze_colors:
             raise ValueError("require_target_colors requires analyze_colors")
+        if self.prediction_model not in ("cv", "ca"):
+            raise ValueError("prediction_model must be cv or ca")
+        if not isinstance(self.camera_gyro_topic, str) or not self.camera_gyro_topic.strip():
+            raise ValueError("camera_gyro_topic must be a nonempty ROS topic")
+        bias = np.asarray(self.camera_gyro_bias_rad_s, dtype=float)
+        if bias.shape != (3,) or not np.isfinite(bias).all():
+            raise ValueError("camera_gyro_bias_rad_s must contain three finite rad/s values")
+        self.camera_gyro_bias_rad_s = tuple(map(float, bias))
+        offset = self.camera_gyro_time_offset_s
+        if isinstance(offset, bool) or not isinstance(offset, (int, float)) or not np.isfinite(offset):
+            raise ValueError("camera_gyro_time_offset_s must be finite seconds")
         sizes = np.asarray(self.sizes_m, dtype=float)
         if sizes.ndim != 1 or not len(sizes) or not np.isfinite(sizes).all() or np.any(sizes <= 0):
             raise ValueError("sizes_m must contain positive finite measured edge lengths")
@@ -301,6 +326,7 @@ class Config:
             "min_edge_px",
             "plane_threshold_m",
             "plane_max_rmse_m",
+            "plane_noise_cap_m",
             "depth_edge_threshold_m",
             "max_reprojection_px",
             "max_depth_residual_m",
@@ -332,6 +358,9 @@ class Config:
             "prediction_accel_std_m_s2",
             "prediction_measurement_std_m",
             "prediction_initial_velocity_std_m_s",
+            "prediction_jerk_std_m_s3",
+            "prediction_initial_accel_std_m_s2",
+            "camera_gyro_max_gap_s",
         ):
             value = getattr(self, key)
             if (

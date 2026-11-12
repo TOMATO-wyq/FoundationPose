@@ -5,6 +5,10 @@
   <arg name="target_distance_m" default="0.30"/>
   <arg name="target_lateral_m" default="0.0"/>
   <arg name="serial_port" default="/dev/ttyUSB0"/>
+  <arg name="camera_yaw_deg" default="0.0"/>
+  <arg name="yaw_enabled" default="true"/>
+  <arg name="serial_yaw_sign" default="1.0"/>
+  <arg name="serial_yaw_scale" default="1.0"/>
   <node pkg="box_pose_control" exec="box_pose_control_node" name="box_pose_control" output="screen">
     <param from="$(var params_file)"/>
     <param name="dry_run" value="$(var dry_run)"/>
@@ -12,5 +16,9 @@
     <param name="target_distance_m" value="$(var target_distance_m)"/>
     <param name="target_lateral_m" value="$(var target_lateral_m)"/>
     <param name="serial_port" value="$(var serial_port)"/>
+    <param name="camera_yaw_deg" value="$(var camera_yaw_deg)"/>
+    <param name="yaw_enabled" value="$(var yaw_enabled)"/>
+    <param name="serial_yaw_sign" value="$(var serial_yaw_sign)"/>
+    <param name="serial_yaw_scale" value="$(var serial_yaw_scale)"/>
   </node>
 </launch>

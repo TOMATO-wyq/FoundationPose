@@ -62,6 +62,7 @@ source /opt/ros/humble/setup.bash
 if [ -f "${HOME}/realsense_ws/install/setup.bash" ]; then
   source "${HOME}/realsense_ws/install/setup.bash"
 fi
+source "${BOX4D_ROOT}/src/scripts/box4d/dds.sh"
 export ROS_LOG_DIR="${ROS_LOG_DIR:-${BOX4D_ROOT}/outputs/box4d_ros_logs}"
 mkdir -p "${ROS_LOG_DIR}"
 echo "Starting Box4D camera: ROS_DOMAIN_ID=${ROS_DOMAIN_ID}, profile=${BOX4D_PROFILE}. Use --domain ${ROS_DOMAIN_ID} for recognition."

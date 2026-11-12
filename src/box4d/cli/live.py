@@ -36,6 +36,8 @@ def main():
         help="measure current stationary IMU UP at startup; an optional old report is compared, not reused",
     )
     p.add_argument("--imu-topic", default="/camera/camera/accel/sample")
+    p.add_argument("--prediction-model", choices=("cv", "ca"), help="override position/velocity or position/velocity/acceleration model")
+    p.add_argument("--no-camera-rotation", action="store_true", help="disable gyro rotation compensation for comparison")
     p.add_argument(
         "--up-plane-roi",
         type=int,
@@ -107,6 +109,8 @@ def main():
         plane_backend=args.plane_backend,
         geometry_backend=args.geometry_backend,
         up_camera=args.up_camera,
+        prediction_model=args.prediction_model,
+        camera_rotation_compensation=False if args.no_camera_rotation else None,
         yolo_weights=None if args.yolo_weights is None else str(args.yolo_weights),
         yolo_device=args.yolo_device,
         yolo_conf=args.yolo_conf,
@@ -130,6 +134,7 @@ def main():
         args.max_sync_ms,
         args.rectified_input,
         imu_topic=args.imu_topic if args.auto_up else None,
+        motion_config=cfg,
     )
     writer = display = pipeline = debug_display = None
     count = 0

@@ -7,6 +7,7 @@
   <arg name="spawn_y" default="5.5"/>
   <arg name="spawn_theta" default="0.0"/>
   <arg name="target_id" default=""/>
+  <arg name="camera_yaw_deg" default="0.0"/>
 
   <node pkg="turtlesim" exec="turtlesim_node" name="turtlesim" output="screen"/>
   <node pkg="box_pose_control" exec="turtlesim_real_view" name="turtlesim_real_view"
@@ -17,5 +18,6 @@
     <param name="spawn_y" value="$(var spawn_y)"/>
     <param name="spawn_theta" value="$(var spawn_theta)"/>
     <param name="target_id" value="$(var target_id)"/>
+    <param name="camera_yaw_deg" value="$(var camera_yaw_deg)"/>
   </node>
 </launch>

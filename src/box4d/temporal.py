@@ -14,7 +14,7 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 from .appearance import analyze_colors, classify_hsv
-from .detector import _edge_support, sample_face
+from .detector import _edge_support, sample_face, check_horizontal_boundary
 from .direction import copy_direction_window, select_direction_candidate
 from .diagnostics import detector_snapshot, has_current_rejections
 from .edges import rgb_depth_edges
@@ -25,6 +25,8 @@ from .geometry import (
     angle_difference,
     cube_vertices,
     fit_plane_configured,
+    plane_limits,
+    plane_spatial_support,
     order_quad,
     ray_plane,
     rigid_fit,
@@ -36,7 +38,10 @@ from .geometry import (
 )
 from .pose import Pipeline
 from .motion import PositionKalman
+from .camera_motion import motion_context, relative_camera_rotation, context_id
 from .scene import select_scene
+from .partial import upper_boundary_evidence
+from .partial_history import UpperPartialHistory
 from .results import append_detection_checks, empty_result, refresh_detection_selection
 from .yolo import make_detection_pipeline
 
@@ -57,6 +62,7 @@ class TemporalPipeline:
         self.detector = make_detection_pipeline(cfg, debug=debug)
         self.up = upright_from_camera(cfg.up_camera)
         self.states = []
+        self.partial_history = UpperPartialHistory(cfg)
         self.last_detection = None
         self.last_stamp = None
         self.last_frame_id = None
@@ -172,30 +178,56 @@ class TemporalPipeline:
         if not self.cfg.motion_prediction:
             return None
         motion = None if previous_state is None else previous_state.get("motion")
-        if motion is not None:
+        context = motion_context(frame, self.cfg)
+        if motion is not None and motion.compatible(context) and motion.model == self.cfg.prediction_model:
             if motion.stamp_ns == frame.stamp_ns:
                 # Reseeding / face switching is correlated evidence in this image.
                 return motion
             gap = (frame.stamp_ns - motion.stamp_ns) / 1e9
             if 0 < gap <= max(self.cfg.track_max_gap_s, self.cfg.prediction_max_gap_s):
-                return motion.updated(pose[:3, 3], frame.stamp_ns)
-        return PositionKalman(pose[:3, 3], frame.stamp_ns, self.cfg)
+                return motion.updated(pose[:3, 3], frame.stamp_ns, context)
+        return PositionKalman(pose[:3, 3], frame.stamp_ns, self.cfg, context)
 
-    def _predicted_pose(self, frame, state):
+    def _camera_rotation(self, frame, state):
+        return relative_camera_rotation(state.get("camera_motion"), motion_context(frame, self.cfg))
+
+    def _direction_reference(self, frame, previous_rotation, window, previous_context):
+        context = motion_context(frame, self.cfg)
+        delta = relative_camera_rotation(previous_context, context)
+        if delta is not None:
+            previous_rotation = delta @ previous_rotation
+            if window is not None:
+                window = copy_direction_window(window)
+                for key in ("angular_velocity", "escape_axis"):
+                    window[key] = delta @ window[key]
+        elif context_id(context) != context_id(previous_context):
+            window = None
+        return previous_rotation, window
+
+    def _predicted_pose(self, frame, state, max_gap_s=None):
         motion = state.get("motion")
-        if not self.cfg.motion_prediction or motion is None or not motion.can_predict(frame.stamp_ns):
+        context = motion_context(frame, self.cfg)
+        delta = self._camera_rotation(frame, state)
+        learned = (self.cfg.motion_prediction and motion is not None
+                   and motion.can_predict(frame.stamp_ns, context))
+        gap = (frame.stamp_ns - state.get("stamp", frame.stamp_ns)) / 1e9
+        rotation_gap = self.cfg.track_max_gap_s if max_gap_s is None else max_gap_s
+        if not learned and (delta is None or gap < 0 or gap > rotation_gap):
             return None
-        mean, _ = motion.predict(frame.stamp_ns)
         pose = state["pose"].copy()
-        pose[:3, 3] = mean[:3]
+        if delta is not None:
+            pose[:3, :] = delta @ pose[:3, :]
+        if learned:
+            mean, _ = motion.predict(frame.stamp_ns, context)
+            pose[:3, 3] = mean[:3]
         return pose
 
     def _motion_center(self, frame, state):
         predicted = self._predicted_pose(frame, state)
         return (state["pose"] if predicted is None else predicted)[:3, 3]
 
-    def _joint_pose(self, frame, state, model, uv, samples, plane, diagnostics=None):
-        predicted = self._predicted_pose(frame, state)
+    def _joint_pose(self, frame, state, model, uv, samples, plane, diagnostics=None, max_gap_s=None):
+        predicted = self._predicted_pose(frame, state, max_gap_s=max_gap_s)
         initial = state if predicted is None else dict(state, pose=predicted)
         rv, tv, report = solve_joint(frame, initial, model, uv, samples, plane, self.cfg)
         if diagnostics is not None:
@@ -295,28 +327,37 @@ class TemporalPipeline:
         center = quad.mean(axis=0)
         return center + (quad - center) * (1 - 2 * self.cfg.track_depth_inset_fraction)
 
-    def _sample_tracking_plane(self, frame, quad, diagnostics=None):
+    def _sample_tracking_plane(self, frame, quad, diagnostics=None, *, allow_clipped=False):
         cfg = self.cfg
         details = {}
         try:
-            samples, fraction = sample_face(frame, quad, cfg, details)
+            samples, fraction = sample_face(frame, quad, cfg, details, allow_clipped=allow_clipped)
             plane = fit_plane_configured(samples, cfg)
             details.update(full_face_plane_support=plane.support, depth_sampling_inset_fraction=0.0)
             if (
-                plane.support < cfg.plane_min_support_fraction or plane.rmse_m > cfg.plane_max_rmse_m
+                plane.support < cfg.plane_min_support_fraction or plane.rmse_m > plane_limits(samples, cfg)[1]
             ) and cfg.track_depth_inset_fraction > 0:
                 interior = {}
                 try:
-                    inner, inner_fraction = sample_face(frame, self._tracking_depth_quad(quad), cfg, interior)
+                    inner, inner_fraction = sample_face(
+                        frame, self._tracking_depth_quad(quad), cfg, interior, allow_clipped=allow_clipped
+                    )
                     inner_plane = fit_plane_configured(inner, cfg)
                     if (
                         inner_plane.support >= cfg.plane_min_support_fraction
-                        and inner_plane.rmse_m <= cfg.plane_max_rmse_m
+                        and inner_plane.rmse_m <= plane_limits(inner, cfg)[1]
                     ):
                         samples, fraction, plane = inner, inner_fraction, inner_plane
                         details.update(interior, depth_sampling_inset_fraction=cfg.track_depth_inset_fraction)
                 except (ValueError, cv2.error):
                     pass
+            threshold, rmse_limit = plane_limits(samples, cfg)
+            details.update(plane_threshold_m=threshold, plane_rmse_max_m=rmse_limit)
+            if cfg.plane_distance_noise:
+                spatial = plane_spatial_support(samples, plane, threshold)
+                details["plane_spatial_support"] = spatial
+                if spatial < 0.8:
+                    raise ValueError("current tracked region has mixed or nonplanar depth: spatial support too narrow")
             return samples, fraction, plane
         finally:
             if diagnostics is not None:
@@ -374,8 +415,11 @@ class TemporalPipeline:
         angle = float(np.rad2deg(np.arccos(np.clip(normal @ plane.normal, -1, 1))))
         if not np.isfinite([reprojection, depth, angle]).all():
             raise TrackingPoseRejected("current_pose_residuals", "nonfinite_pose_residuals")
-        rotation_step_cos = (np.trace(pose[:3, :3] @ state["pose"][:3, :3].T) - 1) / 2
-        normal_step_cos = normal @ (state["pose"][:3, :3] @ state["normal_model"])
+        previous_rotation, _ = self._direction_reference(
+            frame, state["pose"][:3, :3], None, state.get("camera_motion")
+        )
+        rotation_step_cos = (np.trace(pose[:3, :3] @ previous_rotation.T) - 1) / 2
+        normal_step_cos = normal @ (previous_rotation @ state["normal_model"])
         limit = cfg.reprojection_limit(frame.camera)
         trial.update(
             center_camera_m=pose[:3, 3].tolist(),
@@ -395,10 +439,10 @@ class TemporalPipeline:
         predicted = self._predicted_pose(frame, state)
         reference = state["pose"] if predicted is None else predicted
         position_residual = float(np.linalg.norm(pose[:3, 3] - reference[:3, 3]))
+        # Keep displacement observable in diagnostics. A delayed detection can
+        # legitimately move far before reaching this current RGB-D frame.
         trial.update(position_reference="last_observation" if predicted is None else "kf_prediction",
-                     position_residual_m=position_residual, position_limit_m=cfg.track_max_distance_m)
-        if position_residual > cfg.track_max_distance_m:
-            raise TrackingPoseRejected("motion_validation", "position_jump")
+                     position_residual_m=position_residual, position_gate_enabled=False)
         if cfg.up_camera is not None and pose[:3, 2] @ cfg.up_camera < np.cos(np.deg2rad(cfg.max_upright_tilt_deg)):
             raise TrackingPoseRejected("motion_validation", "upright_tilt")
         trial["stage"] = "boundary_validation"
@@ -409,13 +453,58 @@ class TemporalPipeline:
         trial.update(quad_drift_px=drift, quad_drift_limit_px=cfg.track_quad_max_drift_px)
         if drift > cfg.track_quad_max_drift_px:
             raise TrackingPoseRejected("boundary_validation", "quad_drift")
+        horizontal_boundary = check_horizontal_boundary(frame, quad, plane, cfg)
+        if horizontal_boundary is not None:
+            trial["horizontal_boundary"] = horizontal_boundary
+            if horizontal_boundary["continuing_edges"] >= 3:
+                raise TrackingPoseRejected("boundary_validation", "horizontal_plane_continuation")
         support, per_edge = _edge_support(quad, distance, backend=cfg.geometry_backend)
         trial.update(edge_support=support, edge_support_min=cfg.min_edge_support,
                      edge_support_per_side=per_edge, min_supported_edges=2, per_edge_min=0.4)
-        if support < cfg.min_edge_support or sum(v > 0.4 for v in per_edge) < 2:
+        w, h = frame.camera.width, frame.camera.height
+        corners_inside = (
+            (quad[:, 0] >= 1) & (quad[:, 0] <= w - 2)
+            & (quad[:, 1] >= 1) & (quad[:, 1] <= h - 2)
+        )
+        clipped = not corners_inside.all()
+        trial["face_clipped"] = clipped
+        upper_partial = clipped or state.get('visible_quad_model') is not None
+        trial['upper_partial'] = upper_partial
+        if upper_partial:
+            outline = (quad if state.get('visible_quad_model') is None else
+                       frame.camera.project(transform_points(pose, state['visible_quad_model'])))
+            try:
+                boundary = upper_boundary_evidence(frame, outline, plane, cfg, distance,
+                                                   state.get('size_m', state.get('obj', {}).get('size_m', .35)))
+            except ValueError as error:
+                raise TrackingPoseRejected('boundary_validation', 'upper_partial_anchor:' + str(error)) from error
+            trial['anchor_edge_support'] = boundary['anchor_edge_support']
+        if clipped:
+            # Only an existing physical face model with CURRENT, distributed
+            # feature correspondences may carry corners beyond the image.
+            # A cold-start flat patch never establishes a box centre.
+            image_quad = np.array([[0, 0], [w-1, 0], [w-1, h-1], [0, h-1]], np.float32)
+            visible_area, _ = cv2.intersectConvexConvex(quad.astype(np.float32), image_quad)
+            visible_fraction = visible_area / max(cv2.contourArea(quad.astype(np.float32)), 1.0)
+            feature_coverage = cv2.contourArea(cv2.convexHull(uv.astype(np.float32))) / max(visible_area, 1.0)
+            complete_sides = corners_inside & np.roll(corners_inside, -1)
+            observed_sides_ok = all(per_edge[i] > 0.4 for i in np.flatnonzero(complete_sides))
+            trial.update(visible_face_fraction=visible_fraction, visible_feature_coverage=feature_coverage,
+                         clipped_feature_min=8, complete_sides=int(complete_sides.sum()))
+            if (
+                len(uv) < max(8, cfg.track_min_features)
+                or visible_fraction < 0.25
+                or feature_coverage < max(0.18, cfg.track_min_feature_coverage_fraction)
+                or plane.support < max(0.85, cfg.plane_min_support_fraction)
+                or not observed_sides_ok
+            ):
+                raise TrackingPoseRejected("boundary_validation", "clipped_face_current_evidence")
+        elif support < cfg.min_edge_support or sum(v > 0.4 for v in per_edge) < 2:
             raise TrackingPoseRejected("boundary_validation", "current_boundary_support")
         yaw = yaw_from_pose(pose, self.up)
-        previous = yaw_from_pose(state["pose"], self.up)
+        previous_pose = state["pose"].copy()
+        previous_pose[:3, :3] = previous_rotation
+        previous = yaw_from_pose(previous_pose, self.up)
         prior = 0.0 if yaw is None else abs(angle_difference(yaw, previous))
         terms = dict(image=reprojection / limit, depth=depth / cfg.max_depth_residual_m,
                      normal=angle / cfg.max_normal_error_deg, yaw=prior * 0.2)
@@ -440,13 +529,18 @@ class TemporalPipeline:
             )
             try:
                 observed = np.asarray(face["quad"], float)
+                partial = bool(obj.get('metrics', {}).get('upper_partial'))
+                if partial and obj.get('source') == 'current_rgbd_flow':
+                    continue  # Inferred lower corners cannot become reseed correspondences.
+                sample_outline = np.asarray(face.get('evidence', {}).get('visible_outline_quad', observed))
+                observed_size = face.get("metrics", {}).get("observed_face_size_m", size)
                 sample_details = {}
-                samples, depth_fraction, plane = self._sample_tracking_plane(frame, observed, sample_details)
+                samples, depth_fraction, plane = self._sample_tracking_plane(frame, sample_outline, sample_details)
                 model_plane = plane
                 measured_plane_normal = plane.normal.copy()
                 diagnostics["measured_plane_normal_camera"] = measured_plane_normal.tolist()
                 physical_face = rigid_fit(
-                    square_points(size),
+                    square_points(observed_size),
                     ray_plane(frame.camera, observed, plane),
                     backend=self.cfg.geometry_backend,
                 )
@@ -458,11 +552,15 @@ class TemporalPipeline:
                 q = order_quad(projected, backend=self.cfg.geometry_backend)
                 ids = [int(np.argmin(np.linalg.norm(projected - point, axis=1))) for point in q]
                 local = local[ids]
-                local_face = rigid_fit(square_points(size), local, backend=self.cfg.geometry_backend)
+                local_center = local.mean(axis=0)
+                local = local_center + (local - local_center) * (observed_size / size)
+                if partial:
+                    local = (ray_plane(frame.camera, observed, plane) - old_pose[:3, 3]) @ old_pose[:3, :3]
+                local_face = rigid_fit(square_points(observed_size), local, backend=self.cfg.geometry_backend)
                 expected = old_pose[:3, 3] + np.asarray(face["normal_camera"]) * size / 2
                 if (
                     plane.support < self.cfg.plane_min_support_fraction
-                    or plane.rmse_m > self.cfg.plane_max_rmse_m
+                    or plane.rmse_m > plane_limits(samples, self.cfg)[1]
                     or abs(plane.normal @ expected + plane.d) > self.cfg.max_depth_residual_m
                 ):
                     raise TrackingPoseRejected("seed_plane", "seed_plane_inconsistent")
@@ -492,11 +590,14 @@ class TemporalPipeline:
                     check_state = dict(
                         pose=prior_pose, normal_model=normal, quad_model=local,
                         motion=None if previous_state is None else previous_state.get("motion"),
+                        stamp=frame.stamp_ns if previous_state is None else previous_state["stamp"],
+                        camera_motion=(None if previous_state is None
+                                       else previous_state.get("previous_camera_motion")),
                     )
                     if distance is None:
                         edges = rgb_depth_edges(frame, self.cfg, gray=gray)[2]
                         distance = cv2.distanceTransform(255 - edges, cv2.DIST_L2, 3)
-                    inliers = samples[np.abs(samples @ plane.normal + plane.d) < self.cfg.plane_threshold_m]
+                    inliers = samples[np.abs(samples @ plane.normal + plane.d) < plane_limits(samples, self.cfg)[0]]
                     options = []
                     try:
                         measured = self._evaluate_tracking_pose(
@@ -527,9 +628,13 @@ class TemporalPipeline:
                     dt = (frame.stamp_ns - previous_state["previous_stamp_ns"]) / 1e9 if (
                         previous_state is not None and "previous_stamp_ns" in previous_state
                     ) else 1.0 / 60.0
+                    prior_rotation, prior_window = self._direction_reference(
+                        frame, prior_pose[:3, :3],
+                        None if previous_state is None else previous_state.get("direction_window_before"),
+                        check_state["camera_motion"],
+                    )
                     index, selected_window, direction = select_direction_candidate(
-                        options, prior_pose[:3, :3],
-                        None if previous_state is None else previous_state.get("direction_window_before"), dt,
+                        options, prior_rotation, prior_window, dt,
                         prior_per_deg=self.cfg.track_direction_prior_per_deg,
                         tau_s=self.cfg.track_direction_window_tau_s,
                         escape_margin=self.cfg.track_direction_escape_margin,
@@ -591,13 +696,16 @@ class TemporalPipeline:
                                     normal_camera=measured["normal"].tolist(), metrics=seed_metrics)],
                         face_count=1,
                     )
+                elif partial:
+                    rotation, center = old_pose[:3, :3], old_pose[:3, 3]
+                    pose = old_pose.copy()
                 else:
                     rotation = physical_face[:3, :3] @ local_face[:3, :3].T
                     center = physical_face[:3, 3] - rotation @ local.mean(axis=0)
                     pose = transform(rotation, center)
                 mask = np.zeros(gray.shape, np.uint8)
-                cv2.fillConvexPoly(mask, np.rint(observed).astype(np.int32), 255)
-                mask = cv2.dilate(mask, np.ones((5, 5), np.uint8))
+                cv2.fillConvexPoly(mask, np.rint(sample_outline).astype(np.int32), 255)
+                mask = cv2.erode(mask, np.ones((3, 3), np.uint8)) if partial else cv2.dilate(mask, np.ones((5, 5), np.uint8))
                 segmentation = obj.get("segmentation")
                 if segmentation is not None and segmentation.get("stamp_ns") == frame.stamp_ns:
                     instance = np.zeros(gray.shape, np.uint8)
@@ -663,6 +771,9 @@ class TemporalPipeline:
                     obj=seed_obj,
                     pose=pose,
                     quad_model=local,
+                    visible_quad_model=((ray_plane(frame.camera, sample_outline, plane) - center) @ rotation
+                                        if partial else None),
+                    size_m=size,
                     normal_model=normal,
                     points=uv.astype(np.float32).reshape(-1, 1, 2),
                     model=model,
@@ -676,6 +787,9 @@ class TemporalPipeline:
                                                     else previous_state.get("previous_measured_plane_normal")),
                     direction_window=seed_window,
                     motion=self._motion_observation(frame, pose, previous_state),
+                    camera_motion=motion_context(frame, self.cfg),
+                    previous_camera_motion=(None if previous_state is None
+                                            else previous_state.get("previous_camera_motion")),
                 )
             except (ValueError, cv2.error) as error:
                 diagnostics.setdefault("face_rejections", []).append(str(error))
@@ -765,7 +879,7 @@ class TemporalPipeline:
         reprojection_limit = cfg.reprojection_limit(frame.camera)
         gap = (frame.stamp_ns - state["stamp"]) / 1e9
         diagnostics.update(gap_s=gap, features_before=len(state["points"]))
-        predicted = self._predicted_pose(frame, state)
+        predicted = self._predicted_pose(frame, state, max_gap_s=max_gap_s)
         gap_limit = cfg.track_max_gap_s if max_gap_s is None else max_gap_s
         if predicted is not None and max_gap_s is None:
             gap_limit = max(gap_limit, cfg.prediction_max_gap_s)
@@ -786,6 +900,8 @@ class TemporalPipeline:
                 if np.isfinite(proposed).all() and np.max(np.abs(proposed)) < 1e6:
                     initial_points = np.ascontiguousarray(proposed)
         diagnostics["motion_prediction_used"] = predicted is not None
+        diagnostics["camera_rotation_used"] = self._camera_rotation(frame, state) is not None
+        diagnostics["prediction_model"] = cfg.prediction_model
         diagnostics["flow_prediction_used"] = initial_points is not None
         if predicted is not None:
             diagnostics["predicted_center_camera_m"] = predicted[:3, 3].tolist()
@@ -811,6 +927,11 @@ class TemporalPipeline:
             & (error.ravel() < cfg.track_lk_max_error)
         )
         valid &= np.all(np.isfinite(p1.reshape(-1, 2)), axis=1)
+        current_uv = p1.reshape(-1, 2)
+        valid &= (
+            (current_uv[:, 0] >= 1) & (current_uv[:, 0] < frame.camera.width - 1)
+            & (current_uv[:, 1] >= 1) & (current_uv[:, 1] < frame.camera.height - 1)
+        )
         a, b = p0[valid].reshape(-1, 2), p1[valid].reshape(-1, 2)
         model = state["model"][valid]
         diagnostics["bidirectional_features"] = len(a)
@@ -834,7 +955,10 @@ class TemporalPipeline:
         old_quad = frame.camera.project(transform_points(state["pose"], state["quad_model"]))
         q = cv2.perspectiveTransform(old_quad.astype(np.float32).reshape(1, 4, 2), homography).reshape(4, 2)
         area = cv2.contourArea(q)
-        coverage = cv2.contourArea(cv2.convexHull(b)) / max(area, 1.0)
+        w, h = frame.camera.width, frame.camera.height
+        image_quad = np.array([[0, 0], [w-1, 0], [w-1, h-1], [0, h-1]], np.float32)
+        visible_area, _ = cv2.intersectConvexConvex(q.astype(np.float32), image_quad)
+        coverage = cv2.contourArea(cv2.convexHull(b)) / max(visible_area, 1.0)
         diagnostics.update(
             feature_coverage=coverage, feature_coverage_min=cfg.track_min_feature_coverage_fraction
         )
@@ -843,13 +967,17 @@ class TemporalPipeline:
         diagnostics["observed_quad_from_flow"] = q.tolist()
         if area < cfg.min_face_area_px or coverage < cfg.track_min_feature_coverage_fraction:
             raise ValueError("tracked feature coverage too narrow")
-        samples, fraction, plane = self._sample_tracking_plane(frame, q, diagnostics)
+        sample_quad = q
+        if state.get('visible_quad_model') is not None:
+            old_visible = frame.camera.project(transform_points(state['pose'], state['visible_quad_model']))
+            sample_quad = cv2.perspectiveTransform(old_visible.astype(np.float32).reshape(1, 4, 2), homography).reshape(4, 2)
+        samples, fraction, plane = self._sample_tracking_plane(frame, sample_quad, diagnostics, allow_clipped=True)
         diagnostics.update(
             depth_fraction=fraction,
             plane_support=plane.support,
             plane_support_min=cfg.plane_min_support_fraction,
             plane_rmse_m=plane.rmse_m,
-            plane_rmse_max_m=cfg.plane_max_rmse_m,
+            plane_rmse_max_m=plane_limits(samples, cfg)[1],
             measured_plane_normal_camera=plane.normal.tolist(),
             measured_plane_d_m=plane.d,
         )
@@ -860,9 +988,9 @@ class TemporalPipeline:
             else float(np.rad2deg(np.arccos(np.clip(plane.normal @ previous_plane_normal, -1, 1))))
         )
         diagnostics["measured_plane_normal_step_deg"] = plane_normal_step
-        if plane.support < cfg.plane_min_support_fraction or plane.rmse_m > cfg.plane_max_rmse_m:
+        if plane.support < cfg.plane_min_support_fraction or plane.rmse_m > plane_limits(samples, cfg)[1]:
             raise ValueError("current tracked region has mixed or nonplanar depth")
-        samples = samples[np.abs(samples @ plane.normal + plane.d) < cfg.plane_threshold_m]
+        samples = samples[np.abs(samples @ plane.normal + plane.d) < plane_limits(samples, cfg)[0]]
         solutions, candidates, rejected, solver_errors = [], [], [], []
         attempts = diagnostics.setdefault("solver_attempts", [])
 
@@ -937,7 +1065,8 @@ class TemporalPipeline:
             attempts.append(attempt)
             try:
                 rv, tv = self._joint_pose(frame, state, model, b, samples, plane,
-                                          diagnostics=diagnostics.setdefault("joint_solver", {}))
+                                          diagnostics=diagnostics.setdefault("joint_solver", {}),
+                                          max_gap_s=max_gap_s)
                 attempt["status"] = "returned_candidates"
                 check_solution(rv, tv, "joint", 0, attempt)
             except (TypeError, ValueError, cv2.error) as error:
@@ -952,8 +1081,11 @@ class TemporalPipeline:
         window = state.get("direction_window")
         if max_gap_s is not None and gap > cfg.track_max_gap_s:
             window = None
+        prior_rotation, window = self._direction_reference(
+            frame, state["pose"][:3, :3], window, state.get("camera_motion")
+        )
         chosen_index, next_window, direction = select_direction_candidate(
-            candidates, state["pose"][:3, :3], window, gap,
+            candidates, prior_rotation, window, gap,
             prior_per_deg=cfg.track_direction_prior_per_deg,
             tau_s=cfg.track_direction_window_tau_s,
             escape_margin=cfg.track_direction_escape_margin,
@@ -996,6 +1128,10 @@ class TemporalPipeline:
             depth_fraction=fraction,
             plane_rmse_m=plane.rmse_m,
             depth_sampling_inset_fraction=diagnostics["depth_sampling_inset_fraction"],
+            plane_threshold_m=diagnostics["plane_threshold_m"],
+            plane_rmse_max_m=diagnostics["plane_rmse_max_m"],
+            face_clipped=chosen_trial["face_clipped"],
+            visible_face_fraction=chosen_trial.get("visible_face_fraction", 1.0),
             plane_support=plane.support,
             normal_error_deg=angle,
             measured_plane_normal_camera=plane.normal.tolist(),
@@ -1013,6 +1149,10 @@ class TemporalPipeline:
             feature_seed_method=state.get("feature_method", "harris"),
             forward_backward_limit_px=cfg.track_fb_max_error_px,
             edge_support=support,
+            upper_partial=chosen_trial['upper_partial'],
+            anchor_edge_support=chosen_trial.get('anchor_edge_support', []),
+            visible_plane_support_fraction=plane.support * fraction,
+            observed_face_size_m=state["obj"].get("metrics", {}).get("observed_face_size_m", state["obj"]["size_m"]),
         )
         obj.update(
             status="tracked_rgbd",
@@ -1064,6 +1204,8 @@ class TemporalPipeline:
             previous_measured_plane_normal=(None if previous_plane_normal is None else previous_plane_normal.copy()),
             direction_window=next_window,
             motion=self._motion_observation(frame, pose, state),
+            camera_motion=motion_context(frame, self.cfg),
+            previous_camera_motion=state.get("camera_motion"),
         )
         return obj, new
 
@@ -1076,6 +1218,7 @@ class TemporalPipeline:
         if (reference != self.reference
                 or (self.last_frame_id is not None and frame.camera.frame_id != self.last_frame_id)):
             self.states = []
+            self.partial_history.clear()
             self.last_detection = None
             self.reference = reference
             self.region_pipelines = {}
@@ -1263,16 +1406,23 @@ class TemporalPipeline:
                 candidate, switch = self._face_switch_candidate(
                     frame, state, fresh[i], fresh_states.get(id(fresh[i])), gray
                 )
-                if switch is not None:
+                complete_reacquisition = False
+                if (obj['metrics'].get('upper_partial')
+                        and not fresh[i]['metrics'].get('upper_partial')):
+                    candidate = fresh_states.get(id(fresh[i])) or self._seed(frame, fresh[i], gray)
+                    complete_reacquisition = candidate is not None
+                if switch is not None or complete_reacquisition:
                     # Feature model coordinates belong to the new pose: adopt
                     # the complete measured object/state together.
                     candidate["motion"] = state.get("motion")
                     obj, state = fresh[i], candidate
                     state["direction_window"] = copy_direction_window()
-                    face_switches.append((obj, switch))
+                    if switch is not None:
+                        face_switches.append((obj, switch))
                 # 两种匹配都确认身份；只有换面才接管 fresh 的整套几何。
                 obj["detector_confirmed"] = True
-                obj["detector_match_action"] = "face_switch" if switch is not None else "confirm"
+                obj["detector_match_action"] = ('complete_reacquisition' if complete_reacquisition else
+                                                'face_switch' if switch is not None else 'confirm')
                 obj["detector_confirmation_stamp_ns"] = frame.stamp_ns
                 obj["detector_center_difference_m"] = difference
                 obj["detector_center_difference_definition"] = "previous_track_vs_current_detector_candidate"
@@ -1306,7 +1456,9 @@ class TemporalPipeline:
             if seed is not None and i in reacquired:
                 seed["motion"] = self._motion_observation(frame, seed["pose"], reacquired[i])
             states.append(seed)
-        selected, suppressed = select_scene(merged, cfg.max_objects, cfg.up_camera)
+        accepted, partial_rejections = self.partial_history.evaluate(frame, merged)
+        result['rejected_faces'].extend(partial_rejections)
+        selected, suppressed = select_scene(accepted, cfg.max_objects, cfg.up_camera)
         active_pairs = [(o, s) for o, s in zip(merged, states)
                         if s is not None and any(o is chosen for chosen in selected)]
         self.states = [s for o, s in active_pairs]
@@ -1314,7 +1466,8 @@ class TemporalPipeline:
         # Replenish features from a currently validated pose, never from a miss.
         for i, (published, state) in enumerate(active_pairs):
             if (
-                len(state["points"]) < cfg.track_min_reseed_features
+                not published['metrics'].get('upper_partial')
+                and len(state["points"]) < cfg.track_min_reseed_features
                 and (frame.stamp_ns - state["last_reseed"]) / 1e9 > cfg.track_reseed_interval_s
             ):
                 details = dict(check_index=len(reseed_checks), size_m=state["obj"]["size_m"],
@@ -1348,6 +1501,7 @@ class TemporalPipeline:
             ):
                 self.states.append(state)
         result["objects"] = selected
+        self.partial_history.commit(selected)
         result["valid_object_count"] = len(selected)
         result["suppressed_hypotheses"].extend(suppressed)
         result["frame_status"] = (
@@ -1383,6 +1537,7 @@ class TemporalPipeline:
             output_flow_objects=sum(o.get("source") == "current_rgbd_flow" for o in selected),
             local_searches=reports,
             stale_poses_published=0,
+            partial_history_rejections=partial_rejections,
         )
         if self.asynchronous:
             result["temporal"].update(worker_status)

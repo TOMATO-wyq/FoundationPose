@@ -8,14 +8,15 @@
 |---|---|
 | `size:=big` | 只识别、跟踪和控制 35 cm 大块；使用原几何识别 |
 | `size:=small` | 只识别、跟踪和控制 20 cm 小块；默认使用随仓库提供的 YOLO 权重＋RGB-D 位姿 |
-| `target_distance_m:=0.30` | 目标中心位于相机水平前方 0.30 m |
-| `target_lateral_m:=0.0` | 目标中心的水平左侧偏移为 0 m；正值左侧，负值右侧 |
+| `target_distance_m:=0.30` | 以相机为原点，目标中心沿车头方向前方 0.30 m |
+| `target_lateral_m:=0.0` | 以相机为原点，沿底盘左侧方向的偏移为 0 m；正值左侧，负值右侧 |
+| `camera_yaw_deg:=0.0` | 相机位于车体正中间、水平朝前，无需安装偏航补偿（默认） |
 
-两种尺寸使用同一个控制器：先左右对齐，再调整前后距离，到位停车，偏离后恢复跟随。仅控制底盘水平面 XY，不控制高度，也不旋转底盘。识别结果仍保留完整三维位置、旋转四元数、尺寸、颜色/朝向分析和跟踪 ID；“忽略高度”只作用于控制误差。
+两种尺寸使用同一个控制器：同时调整左右和前后位置，各轴到位后独立停车，偏离后恢复跟随。默认横向到位范围为 ±2 cm，前后为 ±3 cm；到位后分别超过 3 cm、4.5 cm 才重新动作，减少观测抖动造成的启停。默认同时控制底盘水平面 XY 和方块 yaw 对正，不控制高度。yaw 误差进入 ±5° 后停转，超过 ±8° 恢复；根据当前角差小角度调整。位置与角度连续稳定到位 0.4 秒后才夹取。识别结果仍保留完整三维位置、旋转四元数、尺寸、颜色/朝向分析和跟踪 ID；“忽略高度”只作用于控制误差。
 
-相机光学坐标是 X 向右、Y 向下、Z 向前。程序用本次静止 IMU 标定的 UP 构造水平前方 `f` 和水平左侧 `l`，对完整位置 `p` 计算 `(p·f, p·l)`。沿 UP 的高度变化不会影响控制。目标距离指**中心的水平距离**，不是光学 Z，也不是前表面距离。相机应固定在底盘上，光轴的水平投影与底盘前进方向一致；UP 无法测量安装偏航。
+相机光学坐标是 X 向右、Y 向下、Z 向前。程序先用本次静止 IMU 标定的 UP 将完整位置投影到相机水平面，再用 `camera_yaw_deg` 换算成底盘的前后、左右轴向。沿 UP 的高度变化不会影响控制。目标距离指**目标中心沿车头方向的水平距离**，以相机为原点，不是前表面距离。当前相机位于车体正中间、水平朝前，实车默认安装偏航为 `camera_yaw_deg=0.0`，保持原来的水平面 XY 跟随策略，无需安装偏航补偿，也不加入安装平移。以后若改变朝向，可显式设置偏航角（左偏为正，右偏为负）；UP 无法测量安装偏航。
 
-`size` 是启动参数，切换时结束上一轮再重新启动。控制端还会检查 `bbox.size` 三轴是否在所选边长 ±1 cm 内；锁定后不自动换 ID，目标丢失或观测超时停车。启动参数默认为 `big`、`dry_run=true`。
+`size` 是启动参数，切换时结束上一轮再重新启动。控制端还会检查 `bbox.size` 三轴是否在所选边长 ±1 cm 内；跟踪正常时锁定 ID，目标丢失或观测超时停车。距上次有效观测超过 1 秒且目标仍丢失时，允许重新选择同规格目标并自动恢复。启动参数默认为 `big`、`dry_run=true`。
 
 ## 2. 安装系统依赖
 
@@ -96,6 +97,17 @@ PYTHONPATH="$PWD/src:$PYTHONPATH" /usr/bin/python3 -m pytest -q \
 
 ## 6. 一条命令启动
 
+如果主工作区和本 bundle 都安装了 `box_pose_control`，可在 bundle 目录使用固定加载本地版本的入口，避免旧控制器拒绝新的速度上限：
+
+```bash
+bash start_box4d_control.sh size:=small dry_run:=false with_view:=false \
+  serial_port:=/dev/ttyUSB0 camera_yaw_deg:=0.0 \
+  target_distance_m:=0.40 target_lateral_m:=0.0 \
+  max_forward_speed:=0.50 max_lateral_speed:=0.50
+```
+
+脚本会自行加载 ROS 和本地安装环境，并打印实际控制包路径；默认启动参数与 `real_pipeline.launch.py` 一致。该入口要求先完成编译安装。
+
 每次新开终端：
 
 ```bash
@@ -128,6 +140,8 @@ ros2 launch box_pose_control real_pipeline.launch.py \
 
 ## 7. 连接底盘
 
+前后比例增益为 `4.0 s⁻¹`，左右比例增益为 `2.0 s⁻¹`，使前后调整较快、横移较缓；各轴默认速度上限和串口输出限幅统一为 `0.50 m/s`。启动日志打印实际生效的两轴增益和速度上限。一键 launch 的速度参数覆盖 YAML 同名值；需要降低上限时传 `max_forward_speed:=0.20 max_lateral_speed:=0.20`。
+
 串口访问需当前用户属于 `dialout` 组：
 
 ```bash
@@ -142,7 +156,7 @@ ros2 launch box_pose_control real_pipeline.launch.py \
   serial_port:=/dev/ttyUSB0 target_distance_m:=0.50 target_lateral_m:=0.0
 ```
 
-串口为 8N1，默认 `961200` 波特率，采用新版 **10 字节**协议：`A5 + int16_le(vx*1000) + int16_le(vy*1000) + int16_le(0) + mode(0) + CRC8 + FF`。CRC8 多项式 `0x07`、初值 0，只覆盖速度和 Mode 的 7 字节。波特率未从参考代码中获得新值；若电控另有配置，修改 `src_control/box_pose_control/config/control.yaml` 后重新 build。
+串口为 8N1，默认 `115200` 波特率，与已验证可用的键盘控制入口 `run_keyboard_test/launch/teleop_run.launch.py` 调用的 `get_and_pub.py` 一致。采用相同的 **10 字节**协议：`A5 + int16_le(vx*1000) + int16_le(vy*1000) + int16_le(0) + mode + CRC8 + FF`。Mode 平时为 0，前后和左右均到位后单帧发送 1 表示夹取，满 1 秒后的首个控制周期单帧发送 -1（线路字节为 `0xFF`），其余帧均为 0。同一目标不重复触发；新目标 ID、修改目标坐标或关闭再开启后可再次触发。遮挡或超时不打断已开始的 1 秒动作；关闭、退出或串口故障取消待发动作。INFO 的 `grip_mode` 显示该周期指令。CRC8 多项式 `0x07`、初值 0，只覆盖速度和 Mode 的 7 字节。若电控另有配置，修改 `src_control/box_pose_control/config/control.yaml` 后重新 build。实车启用时 INFO 会显示实际使用的 `port`、`baudrate` 和帧长；波特率不匹配时即使显示 `serial=sent`，底盘也可能无法解析指令。
 
 调试终端需 `source` 同样的环境并 `export ROS_DOMAIN_ID=86`：
 
@@ -154,7 +168,7 @@ ros2 service call /box_pose_control/set_enabled std_srvs/srv/SetBool '{data: fal
 ros2 service call /box_pose_control/set_enabled std_srvs/srv/SetBool '{data: true}'
 ```
 
-INFO 的 `size`、`id` 指明当前规格/目标；`plane_x/plane_y` 是水平前方/左侧距离，`ex/ey` 是相对目标点的误差。`serial=sent` 只表示本次写入成功。关闭、退出、目标丢失或超时会发送零速；识别进程重启导致 ID 改变时，关闭再开启控制以重新选目标。
+INFO 的 `size`、`id` 指明当前规格/目标；`plane_x/plane_y` 是水平前方/左侧距离，`ex/ey` 是相对目标点的误差。`serial=sent` 只表示本次写入成功。关闭、退出、目标丢失或超时会发送零速。遮挡或识别进程重启导致 ID 改变时，距上次有效观测超过 `target_reacquire_timeout_s`（默认 1 秒）后允许自动重新选取同规格目标；必须收到新鲜、同帧配对的位姿和 UP 才恢复控制，切换时打印 `目标重新锁定`。多个同规格方块在场时，重新选择可能对应另一个方块；需要立即清除目标时仍可关闭再开启控制。
 
 ## 8. 常见部署问题
 
@@ -166,3 +180,12 @@ INFO 的 `size`、`id` 指明当前规格/目标；`plane_x/plane_y` 是水平�
 - 串口错误：确认设备路径、用户组、波特率及设备未被其他节点独占。
 
 本机自动测试覆盖尺寸筛选、原位姿发布、水平投影、倾斜/不同高度、目标丢失停车和串口帧。新电脑的相机吞吐、现场朝向精度、底盘速度符号和到位误差仍需实物验收。
+
+### yaw 自动对正
+
+默认开启：按方块相对车头的角差转正，并与 XY 平移一起反馈调整。
+远处（水平中心距离 >0.7 m）转速上限 0.2 rad/s，近处 0.4 rad/s；姿态未确认时远处限速接近、近处暂停。
+协议沿用旧键盘接口，单位据旧代码推断为 rad/s。根据实车“取反后越转越歪”的反馈，当前默认直接发送（serial_yaw_sign=1.0）；实车速度比例尚需验证。
+`./start_box4d_control.sh yaw_enabled:=false` 可恢复 XY 模式；
+`serial_yaw_sign:=-1.0` 可切换电控方向，`serial_yaw_scale:=...` 可调整比例。
+详细参数及来源见 `src_control/box_pose_control/README.md` 的 yaw 自动对正说明。

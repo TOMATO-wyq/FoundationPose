@@ -23,6 +23,7 @@ source /opt/ros/humble/setup.bash
 if [ -f "${HOME}/realsense_ws/install/setup.bash" ]; then
   source "${HOME}/realsense_ws/install/setup.bash"
 fi
+source "${BOX4D_ROOT}/src/scripts/box4d/dds.sh"
 export ROS_DOMAIN_ID="${BOX4D_DOMAIN}"
 # Reserve CPU capacity for RGB-D tracking while the detector runs. Explicit
 # user environment settings still take precedence over these launch defaults.

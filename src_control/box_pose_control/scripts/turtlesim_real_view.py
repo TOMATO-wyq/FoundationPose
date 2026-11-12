@@ -13,9 +13,9 @@
 
 显示方式：
   * turtle1：真实方块，按检测到的“方块相对相机”位置放到 camera 海龟附近；
-  * camera：相机/底盘，按真实 cmd_vel 做 2D 平移，朝向固定。
+  * camera：相机/底盘，按真实 cmd_vel 做 2D 平移和旋转。
 turtlesim 是差速模型，不能直接接收 linear.y，所以 camera 用 teleport_absolute
-以 60 Hz 更新位姿；控制器仍然只做全向平移、不转向，和真实假设一致。
+以 60 Hz 更新位姿，同时积分 angular.z。
 """
 
 import math
@@ -41,6 +41,9 @@ class TurtlesimRealView(Node):
         self.spawn_x = float(self.declare_parameter("spawn_x", 1.0).value)
         self.spawn_y = float(self.declare_parameter("spawn_y", 5.5).value)
         self.spawn_theta = float(self.declare_parameter("spawn_theta", 0.0).value)
+        self.camera_yaw_deg = float(self.declare_parameter("camera_yaw_deg", 0.0).value)
+        if not math.isfinite(self.camera_yaw_deg) or abs(self.camera_yaw_deg) > 180.0:
+            raise ValueError("camera_yaw_deg must be in [-180, 180] degrees")
         # 1 个 turtlesim 世界单位对应多少米。真实方块常在 0.5~1.5 m，
         # 默认 0.2 m/unit 可以让 1.3 m 在 11x11 的世界里显示得下。
         self.scale = float(self.declare_parameter("meters_per_unit", 0.2).value)
@@ -77,6 +80,7 @@ class TurtlesimRealView(Node):
         self.up_frame = ""
         self.up_received = False
         self.locked_id = self.target_id
+        self.last_target_orientation = None
         self.last_target = None  # (X, Y, Z) in camera optical frame, m
         self.last_detection_at = None
 
@@ -146,6 +150,7 @@ class TurtlesimRealView(Node):
         self.locked_id = target.id
         p = target.bbox.center.position
         self.last_target = (p.x, p.y, p.z)
+        self.last_target_orientation = target.bbox.center.orientation
         self.last_detection_at = time.monotonic()
         if self.ready:
             self.place_box()
@@ -286,16 +291,28 @@ class TurtlesimRealView(Node):
         request = TeleportAbsolute.Request()
         request.x = x
         request.y = y
-        request.theta = 0.0
+        request.theta = self.camera_pose.theta
+        q = self.last_target_orientation
+        if q is not None:
+            norm = math.sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w)
+            qx, qy, qz, qw = (value / norm for value in (q.x, q.y, q.z, q.w))
+            axes = (
+                (1-2*(qy*qy+qz*qz), 2*(qx*qy+qw*qz), 2*(qx*qz-qw*qy)),
+                (2*(qx*qy-qw*qz), 1-2*(qx*qx+qz*qz), 2*(qy*qz+qw*qx)),
+                (2*(qx*qz+qw*qy), 2*(qy*qz-qw*qx), 1-2*(qx*qx+qy*qy)),
+            )
+            axis = min(axes, key=lambda a: abs(sum(a[i]*self.up[i] for i in range(3))))
+            forward, left = self.relative_in_robot_frame(*axis)
+            request.theta += math.atan2(left, forward)
         self.box_teleport_future = self.box_teleport_client.call_async(request)
 
     def relative_in_robot_frame(self, x, y, z):
-        """把光学系的 (X,Y,Z) 投到相机水平面，返回 (forward, left)。
+        """把光学系的 (X,Y,Z) 投到水平面并补偿安装偏航，返回底盘轴向。
 
         与控制器一致：u=UP，f 为光轴水平投影，l=u×f。
         正常安装 u≈(0,-1,0) -> l≈-x_optical；
         倒装 u≈(0,+1,0) -> l≈+x_optical，左右会自动正确。
-        完整光学位置投影到水平面，消除沿 UP 的高度。
+        完整光学位置投影到水平面，消除沿 UP 的高度，再按左偏为正旋转。
         """
         ux, uy, uz = self.up
         fx, fy, fz = -ux * uz, -uy * uz, 1.0 - uz * uz
@@ -310,7 +327,9 @@ class TurtlesimRealView(Node):
         lz = ux * fy - uy * fx
         forward = fx * x + fy * y + fz * z
         left = lx * x + ly * y + lz * z
-        return forward, left
+        yaw = math.radians(self.camera_yaw_deg)
+        c, s = math.cos(yaw), math.sin(yaw)
+        return c * forward - s * left, s * forward + c * left
 
     # -------------------------------------------------------------- camera 运动
     def motion_tick(self):
@@ -321,10 +340,11 @@ class TurtlesimRealView(Node):
             return
 
         if self.cmd_at is None or now - self.cmd_at > self.cmd_timeout:
-            vx, vy = 0.0, 0.0
+            vx, vy, wz = 0.0, 0.0, 0.0
         else:
             vx = self.cmd.linear.x / self.scale
             vy = self.cmd.linear.y / self.scale
+            wz = self.cmd.angular.z
 
         cos_t, sin_t = math.cos(self.cam_theta), math.sin(self.cam_theta)
         self.cam_x = min(
@@ -335,6 +355,9 @@ class TurtlesimRealView(Node):
             max(self.cam_y + (vx * sin_t + vy * cos_t) * dt, WORLD_MIN),
             WORLD_MAX,
         )
+
+        self.cam_theta = math.atan2(math.sin(self.cam_theta + wz * dt),
+                                    math.cos(self.cam_theta + wz * dt))
 
         if (
             self.camera_teleport_future is not None
@@ -357,7 +380,7 @@ class TurtlesimRealView(Node):
                     self.cam_theta = self.camera_pose.theta
                 return
 
-        if vx == 0.0 and vy == 0.0:
+        if vx == 0.0 and vy == 0.0 and wz == 0.0:
             return
 
         request = TeleportAbsolute.Request()

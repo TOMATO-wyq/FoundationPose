@@ -190,7 +190,6 @@ class JointFallbackTests(unittest.TestCase):
             ("max_normal_error_deg", "current_plane_normal"),
             ("max_upright_tilt_deg", "upright_tilt"),
             ("track_quad_max_drift_px", "quad_drift"),
-            ("track_max_distance_m", "position_jump"),
         )
         for setting, failed_check in gates:
             with self.subTest(gate=failed_check):

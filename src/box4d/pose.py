@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 from scipy.optimize import least_squares, linear_sum_assignment
 
-from .detector import sample_face
+from .detector import sample_face, check_horizontal_boundary
 from .errors import FaceSizeMismatch
 from .results import frame_metadata
 from .geometry import (
@@ -15,6 +15,8 @@ from .geometry import (
     box_from_face,
     cube_vertices,
     fit_plane_configured,
+    plane_limits,
+    plane_spatial_support,
     ray_plane,
     rigid_fit,
     rotation_z,
@@ -101,11 +103,14 @@ def _face_summary(diagnostics):
         "edge_support", "status", "stage", "reason", "failed_checks", "trials",
         "depth_fraction", "valid_depth_pixels", "interior_pixels", "plane_rmse_m",
         "plane_support", "plane_support_min", "plane_normal", "plane_d", "edge_lengths_m",
+        "plane_threshold_m", "plane_rmse_max_m", "plane_spatial_support",
+        "horizontal_boundary",
     )
     return _diagnostic_value({key: diagnostics[key] for key in fields if key in diagnostics})
 
 
-def _make_estimate(frame, face, plane, samples, fraction, size, face_pose, method, cfg, diagnostics=None):
+def _make_estimate(frame, face, plane, samples, fraction, size, face_pose, method, cfg, diagnostics=None,
+                   *, observed_size=None):
     trial = _new_trial(diagnostics, method, size, "pose_validation")
     if not np.isfinite(face_pose).all() or face_pose[2, 3] <= 0:
         error = ValueError("nonfinite or behind-camera pose")
@@ -121,7 +126,10 @@ def _make_estimate(frame, face, plane, samples, fraction, size, face_pose, metho
             face_normal_camera=face_pose[:3, 2].tolist(),
             face_center_camera_m=face_pose[:3, 3].tolist(),
         )
-    projected = frame.camera.project(transform_points(face_pose, square_points(size)))
+    observed_size = size if observed_size is None else observed_size
+    if trial is not None:
+        trial["observed_face_size_m"] = observed_size
+    projected = frame.camera.project(transform_points(face_pose, square_points(observed_size)))
     if not np.isfinite(projected).all():
         error = ValueError("nonfinite projected face corners")
         _failed_trial(trial, "projection", "invalid_projection", error)
@@ -177,6 +185,8 @@ def _make_estimate(frame, face, plane, samples, fraction, size, face_pose, metho
         upright_tilt_deg=tilt,
         face_kind=kind,
         edge_support=face.edge_support,
+        observed_face_size_m=observed_size,
+        reprojection_definition="observed square extent; nominal size checked by metric tolerance",
     )
     if trial is not None:
         trial.update(stage="accepted", selection_cost=float(cost), box_center_camera_m=pose[:3, 3].tolist())
@@ -187,6 +197,7 @@ def prepare_face(frame, face, cfg, diagnostics=None):
     if diagnostics is not None:
         diagnostics["stage"] = "depth_sampling"
     samples, fraction = sample_face(frame, face.quad, cfg, diagnostics)
+    threshold, rmse_limit = plane_limits(samples, cfg)
     if diagnostics is not None:
         diagnostics["stage"] = "plane_fit"
     if face.plane_hint is None or face.inferred:
@@ -196,7 +207,7 @@ def prepare_face(frame, face, cfg, diagnostics=None):
     else:
         parent = face.plane_hint
         residual = np.abs(samples @ parent.normal + parent.d)
-        selected = residual < cfg.plane_threshold_m
+        selected = residual < threshold
         if selected.sum() < cfg.min_depth_samples:
             raise ValueError("inferred face lacks current depth support")
         plane = Plane(
@@ -209,13 +220,27 @@ def prepare_face(frame, face, cfg, diagnostics=None):
             plane_support_min=cfg.plane_min_support_fraction,
             plane_normal=plane.normal,
             plane_d=plane.d,
+            plane_threshold_m=threshold,
+            plane_rmse_max_m=rmse_limit,
         )
         if not diagnostics.get("_lightweight"):
             diagnostics["sample_residual_m"] = np.abs(samples @ plane.normal + plane.d)
         diagnostics["stage"] = "plane_validation"
-    if plane.rmse_m > cfg.plane_max_rmse_m or plane.support < cfg.plane_min_support_fraction:
+    if plane.rmse_m > rmse_limit or plane.support < cfg.plane_min_support_fraction:
         raise ValueError("nonplanar or mixed-depth face")
-    samples = samples[np.abs(samples @ plane.normal + plane.d) < cfg.plane_threshold_m]
+    if cfg.plane_distance_noise:
+        spatial = plane_spatial_support(samples, plane, threshold)
+        if diagnostics is not None:
+            diagnostics["plane_spatial_support"] = spatial
+        if spatial < 0.8:
+            raise ValueError("nonplanar or mixed-depth face: spatial support too narrow")
+    samples = samples[np.abs(samples @ plane.normal + plane.d) < threshold]
+    boundary = check_horizontal_boundary(frame, face.quad, plane, cfg)
+    if boundary is not None:
+        if diagnostics is not None:
+            diagnostics.update(stage="physical_boundary", horizontal_boundary=boundary)
+        if boundary["continuing_edges"] >= 3:
+            raise ValueError("horizontal color patch continues into surrounding depth plane")
     if diagnostics is not None:
         diagnostics["stage"] = "ray_intersection"
     corners = ray_plane(frame.camera, face.quad, plane)
@@ -246,10 +271,23 @@ def estimate_face(frame, face, cfg, prepared=None, diagnostics=None):
                 trial["size_max_relative_error"] = size_error
             _failed_trial(trial, "size_validation", "size_mismatch", "observed face dimensions do not match size")
             continue
+        # The nominal cube size remains the class and center-offset model.
+        # Fit an observed square extent only within the already-checked metric
+        # tolerance; its shape, depth, normal and pixel residuals still pass the
+        # same gates. This avoids turning a 1 cm fabric/frame inset into a
+        # distance-dependent rejection or a false PnP depth translation.
+        observed_size = size
+        if cfg.fit_observed_face_size:
+            nominal_fit = rigid_fit(square_points(size), corners, backend=cfg.geometry_backend)
+            centered = corners - corners.mean(axis=0)
+            model = square_points(size) @ nominal_fit[:3, :3].T
+            observed_size = size * float(np.sum(centered * model) / np.sum(model * model))
+            if abs(observed_size / size - 1) > cfg.size_tolerance_fraction:
+                continue
         methods = []
         if cfg.method in ("depth", "hybrid"):
             try:
-                methods.append(("depth", rigid_fit(square_points(size), corners, backend=cfg.geometry_backend)))
+                methods.append(("depth", rigid_fit(square_points(observed_size), corners, backend=cfg.geometry_backend)))
             except ValueError as error:
                 trial = _new_trial(diagnostics, "depth", size, "solver")
                 _failed_trial(trial, "solver", "solver_error", error)
@@ -258,7 +296,7 @@ def estimate_face(frame, face, cfg, prepared=None, diagnostics=None):
         if cfg.method in ("pnp", "hybrid"):
             try:
                 result = cv2.solvePnPGeneric(
-                    square_points(size),
+                    square_points(observed_size),
                     np.ascontiguousarray(face.quad),
                     frame.camera.k,
                     frame.camera.d,
@@ -276,7 +314,8 @@ def estimate_face(frame, face, cfg, prepared=None, diagnostics=None):
         for method, pose in methods:
             try:
                 estimate = _make_estimate(
-                    frame, face, plane, samples, fraction, size, pose, method, cfg, diagnostics
+                    frame, face, plane, samples, fraction, size, pose, method, cfg, diagnostics,
+                    observed_size=observed_size,
                 )
                 estimate.metrics["size_max_relative_error"] = size_error
                 estimates.append(estimate)
@@ -341,13 +380,15 @@ def estimate_partial_face(frame, face, cfg, diagnostics=None):
 
 def _estimate_partial_face(frame, face, cfg, diagnostics=None):
     """Depth/UP + an observed top/width anchor; no PnP on invented corners."""
-    from .partial import partial_samples
+    from .partial import partial_samples, upper_boundary_evidence
+    from .edges import rgb_depth_edges
 
     if cfg.method == "pnp":
         raise ValueError("bottom occlusion requires measured depth geometry, unavailable in PnP-only mode")
     if diagnostics is not None:
         diagnostics["stage"] = "depth_sampling"
-    samples = partial_samples(frame, face, cfg)
+    sample_report = {}
+    samples = partial_samples(frame, face, cfg, sample_report)
     if diagnostics is not None:
         diagnostics["stage"] = "plane_fit"
     plane = fit_plane_configured(samples, cfg)
@@ -384,6 +425,11 @@ def _estimate_partial_face(frame, face, cfg, diagnostics=None):
     width_error = float(abs(np.linalg.norm(top[1] - top[0]) / size - 1))
     if width_error > min(0.06, cfg.size_tolerance_fraction):
         raise ValueError("partial observed width does not match known size")
+    edges = rgb_depth_edges(frame, cfg)[2]
+    boundary = upper_boundary_evidence(
+        frame, np.asarray(face.evidence.get("visible_outline_quad", face.quad)), plane, cfg,
+        cv2.distanceTransform(255 - edges, cv2.DIST_L2, 3), size,
+    )
     if diagnostics is not None:
         diagnostics["stage"] = "partial_visibility_validation"
     if -normal @ top.mean(axis=0) / np.linalg.norm(top.mean(axis=0)) < 0.40:
@@ -415,6 +461,9 @@ def _estimate_partial_face(frame, face, cfg, diagnostics=None):
         edge_support=face.edge_support,
         size_max_relative_error=width_error,
         observed_anchor="top edge and both side boundaries",
+        upper_partial=face.evidence.get("upper_partial", True),
+        visible_plane_support_fraction=sample_report["visible_plane_support_fraction"],
+        anchor_edge_support=boundary["anchor_edge_support"],
         **{k: v for k, v in face.evidence.items() if k.endswith("depth_fraction")},
     )
     cost = 0.5 + width_error / cfg.size_tolerance_fraction + depth_error / cfg.max_depth_residual_m
@@ -469,13 +518,16 @@ def _correspondences(anchor, observations):
     for estimate in observations:
         if estimate.face.source == "bottom_occlusion_model":
             continue  # Inferred bottom corners are not independent image evidence.
-        observed = transform_points(estimate.face_pose, square_points(estimate.size))
+        observed_size = estimate.metrics.get("observed_face_size_m", estimate.size)
+        observed = transform_points(estimate.face_pose, square_points(observed_size))
         rows, columns = linear_sum_assignment(
             np.linalg.norm(observed[:, None] - camera_vertices[None], axis=2)
         )
         if np.max(np.linalg.norm(observed[rows] - camera_vertices[columns], axis=1)) > anchor.size * 0.25:
             continue
-        model = vertices[columns]
+        model = vertices[columns].copy()
+        center = model.mean(axis=0)
+        model = center + (model - center) * (observed_size / estimate.size)
         data.append(
             (
                 model,
